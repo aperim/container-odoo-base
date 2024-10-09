@@ -410,7 +410,7 @@ jobs:
             if [ ! -z "$REPO" ]; then
               echo "Pinging repository: $REPO"
               # Prepare the payload
-              PAYLOAD="{\"event_type\": \"container_updated\", \"client_payload\": { \"repository\": \"${CURRENT_REPO}\", \"release_tag\": \"${RELEASE_TAG}\" }}"
+              PAYLOAD="{\"event_type\": \"update_base_image\", \"client_payload\": { \"repository\": \"${CURRENT_REPO}\", \"release_tag\": \"${RELEASE_TAG}\" }}"
               # Send repository_dispatch event
               curl -X POST \
                 -H "Authorization: token ${PAT_FOR_PINGING}" \
