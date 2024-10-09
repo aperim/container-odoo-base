@@ -1,0 +1,105 @@
+ARG ODOO_MAJOR_VERSION=17
+ARG ODOO_MINOR_VERSION=0
+FROM odoo:${ODOO_MAJOR_VERSION:-17} as scripts
+
+# Copy and rename files individually
+COPY tools/src/addon_updater.py /usr/local/sbin/odoo-addon-updater
+COPY tools/src/lock_handler.py /usr/local/sbin/lock-handler
+COPY tools/src/odoo_config.py /usr/local/sbin/odoo-config
+COPY tools/src/replace_odoo_addons_path.py /usr/local/sbin/odoo-replace-addons-path
+COPY tools/src/wait_for_initialization.py /usr/local/sbin/wait-for-initialization
+COPY tools/src/wait_for_postgres.py /usr/local/sbin/wait-for-postgres
+COPY tools/src/websocket_checker.py /usr/local/sbin/healthcheck-websocket
+COPY tools/src/healthcheck_full.py /usr/local/sbin/healthcheck-full
+COPY tools/src/odoo_regenerate_assets.py /usr/local/sbin/odoo-regenerate-assets
+COPY tools/src/odoo_upgrade.py /usr/local/sbin/odoo-upgrade
+COPY backup/backup.sh /usr/local/sbin/backup
+COPY backup/restore.sh /usr/local/sbin/restore
+COPY entrypoint/entrypoint.sh /usr/local/sbin/entrypoint
+
+ARG ODOO_MAJOR_VERSION=17
+ARG ODOO_MINOR_VERSION=0
+FROM odoo:${ODOO_MAJOR_VERSION:-17}
+
+USER root
+
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y gosu gnupg locales redis-tools rsync openssh-client
+
+COPY requirements.txt /tmp/requirements.txt
+ARG ODOO_MAJOR_VERSION=17
+RUN sed -i "/en_US.UTF-8/s/^# //g" /etc/locale.gen && \
+    locale-gen en_US.UTF-8 && \
+    update-locale LANG=en_US.UTF-8 && \
+    if [ "$ODOO_MAJOR_VERSION" -ge 18 ]; then \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    python3-certifi \
+    python3-charset-normalizer \
+    python3-dbfread \
+    python3-google-auth \
+    python3-idna \
+    python3-jwt \
+    python3-ldap \
+    python3-psycopg2 \
+    python3-redis \
+    python3-requests \
+    python3-twilio \
+    python3-urllib3 \
+    python3-websockets && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*; \
+    else \
+    pip3 install --no-cache-dir \
+    redis \
+    google_auth \
+    ebaysdk \
+    pyjwt \
+    dbfread \
+    python-ldap \
+    twilio && \
+    pip3 install --no-cache-dir -r /tmp/requirements.txt; \
+    fi && \
+    rm /tmp/requirements.txt
+
+COPY --chown=odoo:odoo rootfs/usr/share/GeoIP /usr/share/GeoIP
+COPY --chown=odoo:odoo rootfs/usr/share/odoo /usr/share/odoo
+ARG ODOO_MAJOR_VERSION=17
+ARG ODOO_MINOR_VERSION=0
+COPY --chown=odoo:odoo extras/${ODOO_MAJOR_VERSION}.${ODOO_MINOR_VERSION} /usr/share/odoo/extras
+
+RUN mkdir -p /opt/odoo && \
+    chown -R odoo:odoo /opt/odoo && \
+    ln -s /usr/share/odoo/community /opt/odoo/community && \
+    ln -s /usr/share/odoo/enterprise /opt/odoo/enterprise && \
+    ln -s /usr/share/odoo/extras /opt/odoo/extras
+
+COPY --from=scripts /usr/local/sbin /usr/local/sbin
+
+# Accept build argument
+ARG BUILD_TIMESTAMP
+
+# Set environment variable
+ENV ODOO_ADDONS_TIMESTAMP=${BUILD_TIMESTAMP}
+
+# Build arguments for labels
+ARG BUILD_DATE
+ARG VCS_REF
+ARG VERSION
+ARG REPO_URL
+ARG ODOO_MAJOR_VERSION=17
+
+# Set labels
+LABEL org.opencontainers.image.created=$BUILD_DATE \
+    org.opencontainers.image.url=$REPO_URL \
+    org.opencontainers.image.source=$REPO_URL \
+    org.opencontainers.image.version=$VERSION \
+    org.opencontainers.image.revision=$VCS_REF \
+    org.opencontainers.image.vendor="Aperim Pty Ltd" \
+    org.opencontainers.image.title="Odoo $ODOO_MAJOR_VERSION Enterprise" \
+    org.opencontainers.image.description="Odoo $ODOO_MAJOR_VERSION Enterprise Edition Container"
+
+HEALTHCHECK --interval=30s --timeout=30s --retries=3 --start-period=90m CMD curl -X HEAD -I http://127.0.0.1:8069/web/health
+
+ENTRYPOINT [ "/usr/local/sbin/entrypoint" ]
+CMD [ "odoo" ]

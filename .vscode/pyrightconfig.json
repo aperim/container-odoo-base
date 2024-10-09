@@ -1,0 +1,10 @@
+{
+    // Ignore folders for linting
+    "exclude": [
+        "/rootfs/usr/share/odoo/community/**",
+        "/rootfs/usr/share/odoo/enterprise/**"
+    ],
+    "useLibraryCodeForTypes": true,
+    "reportUnnecessaryStringConcat": "false",
+    "reportStringMultiline": "false"
+}

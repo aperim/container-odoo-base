@@ -1,0 +1,138 @@
+{
+    // VSCode Task Configuration
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build Odoo Test Container",
+            "type": "shell",
+            "command": "docker build --build-arg ODOO_MAJOR_VERSION=${env:ODOO_MAJOR_VERSION} --build-arg ODOO_MINOR_VERSION=${env:ODOO_MINOR_VERSION} --build-arg ODOO_ADDONS_TIMESTAMP=$(date +%s) -t odoo-testing:${env:ODOO_MAJOR_VERSION}-${env:ODOO_MINOR_VERSION}e -f Dockerfile.e.odoo .",
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "clear": false
+            },
+            "options": {
+                "shell": {
+                    "executable": "/bin/bash",
+                    "args": [
+                        "-c"
+                    ]
+                },
+                "env": {
+                    "ODOO_MAJOR_VERSION": "${env:ODOO_MAJOR_VERSION}",
+                    "ODOO_MINOR_VERSION": "${env:ODOO_MINOR_VERSION}"
+                }
+            }
+        },
+        {
+            "label": "Build Nginx Test Container",
+            "type": "shell",
+            "command": "docker build --build-arg ODOO_MAJOR_VERSION=${env:ODOO_MAJOR_VERSION} --build-arg ODOO_MINOR_VERSION=${env:ODOO_MINOR_VERSION} -t nginx-odoo-testing:${env:ODOO_MAJOR_VERSION}-${env:ODOO_MINOR_VERSION}e -f Dockerfile.e.nginx .",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "clear": false
+            },
+            "options": {
+                "env": {
+                    "ODOO_MAJOR_VERSION": "${env:ODOO_MAJOR_VERSION}",
+                    "ODOO_MINOR_VERSION": "${env:ODOO_MINOR_VERSION}"
+                }
+            }
+        },
+        {
+            "label": "Start Odoo Test Container",
+            "type": "shell",
+            "command": "docker run --rm --name odoo-testing --net=host --env ODOO_MASTER_PASSWORD --env POSTGRES_HOST --env POSTGRES_USER --env POSTGRES_PASSWORD --env POSTGRES_DB --env POSTGRES_SSL_MODE --env REDIS_HOST --env REDIS_PASSWORD --env REDIS_SSL -v odooconfig:/etc/odoo -v odoovar:/var/lib/odoo odoo-testing:${env:ODOO_MAJOR_VERSION}-${env:ODOO_MINOR_VERSION}e --proxy-mode --max-cron-threads 4 --log-level debug_rpc_answer --log-web --x-sendfile",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "clear": false
+            },
+            "options": {
+                "env": {
+                    "POSTGRES_HOST": "${env:POSTGRES_HOST}",
+                    "POSTGRES_USER": "${env:POSTGRES_USER}",
+                    "POSTGRES_PASSWORD": "${env:POSTGRES_PASSWORD}",
+                    "POSTGRES_DB": "${env:POSTGRES_DB}",
+                    "POSTGRES_SSL_MODE": "${env:POSTGRES_SSL_MODE}",
+                    "REDIS_HOST": "${env:REDIS_HOST}",
+                    "REDIS_PASSWORD": "${env:REDIS_PASSWORD}",
+                    "REDIS_SSL": "${env:REDIS_SSL}",
+                    "ODOO_MAJOR_VERSION": "${env:ODOO_MAJOR_VERSION}",
+                    "ODOO_MINOR_VERSION": "${env:ODOO_MINOR_VERSION}",
+                    "ODOO_MASTER_PASSWORD": "${env:ODOO_MASTER_PASSWORD}"
+                }
+            }
+        },
+        {
+            "label": "Start Odoo Test Container with Bash",
+            "type": "shell",
+            "command": "docker run --rm -it --name odoo-testing-bash  --net=host --env ODOO_MASTER_PASSWORD --env POSTGRES_HOST --env POSTGRES_USER --env POSTGRES_PASSWORD --env POSTGRES_DB --env POSTGRES_SSL_MODE --env REDIS_HOST --env REDIS_PASSWORD --env REDIS_SSL -v odooconfig:/etc/odoo -v odoovar:/var/lib/odoo odoo-testing:${env:ODOO_MAJOR_VERSION}-${env:ODOO_MINOR_VERSION}e /bin/bash",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "dedicated",
+                "clear": false
+            },
+            "options": {
+                "env": {
+                    "POSTGRES_HOST": "${env:POSTGRES_HOST}",
+                    "POSTGRES_USER": "${env:POSTGRES_USER}",
+                    "POSTGRES_PASSWORD": "${env:POSTGRES_PASSWORD}",
+                    "POSTGRES_DB": "${env:POSTGRES_DB}",
+                    "POSTGRES_SSL_MODE": "${env:POSTGRES_SSL_MODE}",
+                    "REDIS_HOST": "${env:REDIS_HOST}",
+                    "REDIS_PASSWORD": "${env:REDIS_PASSWORD}",
+                    "REDIS_SSL": "${env:REDIS_SSL}",
+                    "ODOO_MAJOR_VERSION": "${env:ODOO_MAJOR_VERSION}",
+                    "ODOO_MINOR_VERSION": "${env:ODOO_MINOR_VERSION}",
+                    "ODOO_MASTER_PASSWORD": "${env:ODOO_MASTER_PASSWORD}"
+                }
+            }
+        },
+        {
+            "label": "Start Nginx Test Container",
+            "type": "shell",
+            "command": "docker run -it --rm --name nginx-odoo-testing --net=host --env ODOO_HOST=localhost --env ODOO_PORT=8069 --env ODOO_TLS=false nginx-odoo-testing:${env:ODOO_MAJOR_VERSION}-${env:ODOO_MINOR_VERSION}e",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "clear": false
+            },
+            "options": {
+                "env": {
+                    "POSTGRES_HOST": "${env:POSTGRES_HOST}",
+                    "POSTGRES_USER": "${env:POSTGRES_USER}",
+                    "POSTGRES_PASSWORD": "${env:POSTGRES_PASSWORD}",
+                    "POSTGRES_DB": "${env:POSTGRES_DB}",
+                    "POSTGRES_SSL_MODE": "${env:POSTGRES_SSL_MODE}",
+                    "REDIS_HOST": "${env:REDIS_HOST}",
+                    "REDIS_PASSWORD": "${env:REDIS_PASSWORD}",
+                    "REDIS_SSL": "${env:REDIS_SSL}",
+                    "ODOO_MAJOR_VERSION": "${env:ODOO_MAJOR_VERSION}",
+                    "ODOO_MINOR_VERSION": "${env:ODOO_MINOR_VERSION}",
+                    "ODOO_MASTER_PASSWORD": "${env:ODOO_MASTER_PASSWORD}"
+                }
+            }
+        }
+    ]
+}

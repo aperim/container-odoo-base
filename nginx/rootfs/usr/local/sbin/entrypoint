@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+#
+# entrypoint - Entrypoint script for the Nginx Docker container.
+#
+# This script sets up the Nginx configuration based on environment variables
+# and starts the Nginx server. It adjusts the backend server settings according
+# to Odoo host, port, and TLS configuration. Additionally, it updates the DNS
+# resolver based on /etc/resolv.conf.
+#
+# Author: Troy Kelly <troy@aperim.com>
+# History:
+#   2024-09-14: Initial creation
+#   2024-09-14: Updated to dynamically set DNS resolver from /etc/resolv.conf
+
+set -Eeuo pipefail
+
+# Trap signals for cleanup
+trap 'cleanup' SIGINT SIGTERM
+
+# Function to perform cleanup tasks before exiting
+cleanup() {
+  log "Received termination signal, cleaning up..."
+  exit 1
+}
+
+# Function to log messages with timestamps to STDERR
+log() {
+  local message="$*"
+  echo "$(date '+%Y-%m-%d %H:%M:%S') [entrypoint] $message" >&2
+}
+
+# Function to handle custom commands
+handle_custom_command() {
+  # Execute custom command provided as arguments
+  log "Executing custom command: $*"
+  exec "$@"
+}
+
+# Function to wait for Odoo service to become available
+wait_for_odoo() {
+  local max_attempts=360
+  local sleep_seconds=15
+  local attempt=1
+  local odoo_url="${ODOO_SCHEME}://${ODOO_HOST}:${ODOO_PORT}/web/health"
+
+  log "Waiting for the Odoo service to become available..."
+
+  until curl -sSf --max-time 10 "$odoo_url" > /dev/null; do
+    if (( attempt >= max_attempts )); then
+      log "Odoo did not become available after $max_attempts attempts, aborting."
+      exit 1
+    fi
+    log "Attempt $attempt of $max_attempts: Odoo is not up yet, sleeping for $sleep_seconds seconds..."
+    ((attempt++))
+    sleep "$sleep_seconds"
+  done
+
+  log "Odoo is available."
+}
+
+# Function to update Nginx configuration with environment variables and DNS resolver
+update_nginx_conf() {
+  local template_file="/etc/nginx/conf.d/default.conf.template"
+  local nginx_conf_file="/etc/nginx/conf.d/default.conf"
+
+  if [[ ! -f "$template_file" ]]; then
+    log "Nginx configuration template file '$template_file' not found."
+    exit 1
+  fi
+
+  log "Updating Nginx configuration with environment variables..."
+
+  # Escape special characters in variables for sed
+  local escaped_odoo_host
+  local escaped_odoo_port
+  local escaped_odoo_scheme
+  escaped_odoo_host=$(printf '%s' "${ODOO_HOST}" | sed 's/[\/&]/\\&/g')
+  escaped_odoo_port=$(printf '%s' "${ODOO_PORT}" | sed 's/[\/&]/\\&/g')
+  escaped_odoo_scheme=$(printf '%s' "${ODOO_SCHEME}" | sed 's/[\/&]/\\&/g')
+
+  # Extract the nameserver from /etc/resolv.conf
+  local nameserver
+  nameserver=$(awk '/^nameserver/ { print $2; exit }' /etc/resolv.conf)
+  if [[ -z "$nameserver" ]]; then
+    log "No nameserver found in /etc/resolv.conf. Defaulting to 127.0.0.11."
+    nameserver="127.0.0.11"
+  fi
+  log "Using DNS resolver: $nameserver"
+
+  # Escape nameserver for sed
+  local escaped_nameserver
+  escaped_nameserver=$(printf '%s' "${nameserver}" | sed 's/[\/&]/\\&/g')
+
+  # Read the template and replace placeholders
+  sed -e "s/{{ODOO_HOST}}/${escaped_odoo_host}/g" \
+      -e "s/{{ODOO_PORT}}/${escaped_odoo_port}/g" \
+      -e "s/{{ODOO_SCHEME}}/${escaped_odoo_scheme}/g" \
+      -e "s/{{RESOLVER}}/${escaped_nameserver}/g" \
+      "$template_file" > "$nginx_conf_file"
+
+  log "Nginx configuration updated."
+}
+
+main() {
+  # Set default values for environment variables if not set
+  export ODOO_HOST="${ODOO_HOST:-odoo}"
+  export ODOO_PORT="${ODOO_PORT:-8069}"
+  export ODOO_TLS="${ODOO_TLS:-false}"
+
+  # Determine ODOO_SCHEME based on ODOO_TLS
+  if [[ "$ODOO_TLS" == "true" ]]; then
+    export ODOO_SCHEME="https"
+  else
+    export ODOO_SCHEME="http"
+  fi
+
+  # Handle custom commands
+  if [[ $# -gt 0 ]]; then
+    case "$1" in
+      nginx|--*)
+        # Proceed with Nginx initialization
+        ;;
+      *)
+        # Execute custom command
+        handle_custom_command "$@"
+        ;;
+    esac
+  fi
+
+  update_nginx_conf
+
+  wait_for_odoo
+
+  # Start Nginx
+  log "Starting Nginx server... '$@'"
+  exec /docker-entrypoint.sh "$@"
+}
+
+# Start the main function with all passed arguments
+main "$@"

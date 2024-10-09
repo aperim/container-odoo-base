@@ -1,0 +1,27 @@
+{
+    "python.languageServer": "Pylance",
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "ms-python.autopep8", // Use autopep8 for Python formatting
+    "editor.formatOnSaveMode": "file",
+    "python.analysis.typeCheckingMode": "strict",
+    "python.analysis.autoSearchPaths": true,
+    "python.analysis.useLibraryCodeForTypes": true,
+    "python.analysis.diagnosticSeverityOverrides": {
+        "reportUnnecessaryStringConcat": "none",
+        "reportStringMultiline": "none"
+    },
+    "python.testing.pytestEnabled": true,
+    "python.testing.pytestArgs": [
+        "tests"
+    ],
+    "python.analysis.exclude": [
+        "**/node_modules",
+        "**/__pycache__",
+        "**/build",
+        ".git",
+        "rootfs/**"
+    ],
+    "files.exclude": {
+        "**/.pixi/envs": true
+    }
+}

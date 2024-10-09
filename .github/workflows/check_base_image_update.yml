@@ -1,0 +1,361 @@
+# .github/workflows/check_base_image_update.yml
+name: Check for Odoo Base Image Updates
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Runs daily at midnight
+  workflow_dispatch:
+
+jobs:
+  check-base-image:
+    name: Check for Odoo Base Image Updates
+    runs-on: ubuntu-latest
+    env:
+      ODOO_VERSIONS: '16 17 18'  # Odoo versions to check
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0  # Fetch full history for versioning and tags
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+
+      - run: npm install semver
+
+      - name: Get Base Image Digests
+        id: get_digests
+        uses: actions/github-script@v7
+        with:
+          script: |
+            /**
+             * Script to fetch the latest image digests for specified Odoo versions.
+             * This script uses the Docker Registry HTTP API V2 to retrieve image digests.
+             * Author: Troy Kelly
+             * Contact: troy@aperim.com
+             */
+
+            const odooVersions = process.env.ODOO_VERSIONS.split(' ');
+            const versionDigests = {};
+
+            // Get authentication token for Docker Hub
+            const authResponse = await fetch(`https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/odoo:pull`);
+            const authData = await authResponse.json();
+            const token = authData.token;
+
+            for (const version of odooVersions) {
+              // Get the manifest for the specific tag
+              const manifestResponse = await fetch(`https://registry-1.docker.io/v2/library/odoo/manifests/${version}`, {
+                headers: {
+                  'Authorization': `Bearer ${token}`,
+                  'Accept': 'application/vnd.docker.distribution.manifest.v2+json'
+                }
+              });
+
+              if (manifestResponse.status !== 200) {
+                core.warning(`Failed to fetch image manifest for Odoo ${version}`);
+                continue;
+              }
+
+              const digest = manifestResponse.headers.get('docker-content-digest');
+              if (!digest) {
+                core.warning(`Failed to get digest for Odoo ${version}`);
+                continue;
+              }
+
+              console.log(`Base image digest for Odoo ${version} is ${digest}`);
+              versionDigests[version] = digest;
+            }
+
+            // Output the versionDigests as a JSON string
+            core.setOutput('version_digests', JSON.stringify(versionDigests));
+
+      - name: Check for Updated Versions
+        id: check_updates
+        uses: actions/github-script@v7
+        with:
+          script: |
+            /**
+             * Script to compare fetched digests with stored digests and determine which versions need updates.
+             * Author: Troy Kelly
+             * Contact: troy@aperim.com
+             */
+
+            const versionDigests = JSON.parse('${{ steps.get_digests.outputs.version_digests }}');
+            const fs = require('fs');
+            const updatedVersions = [];
+            for (const [version, digest] of Object.entries(versionDigests)) {
+              const fileName = `odoo_base_image_digest_v${version}.txt`;
+              let storedDigest = null;
+              if (fs.existsSync(fileName)) {
+                storedDigest = fs.readFileSync(fileName, 'utf8').trim();
+                if (digest !== storedDigest) {
+                  console.log(`Digest changed for Odoo ${version}`);
+                  updatedVersions.push(version);
+                } else {
+                  console.log(`No change for Odoo ${version}`);
+                }
+              } else {
+                console.log(`No stored digest for Odoo ${version}, treating as changed`);
+                updatedVersions.push(version);
+              }
+            }
+            if (updatedVersions.length > 0) {
+              core.setOutput('need_update', 'true');
+              core.setOutput('updated_versions', updatedVersions.join(' '));
+              core.exportVariable('UPDATED_VERSIONS', updatedVersions.join(' '));
+            } else {
+              core.setOutput('need_update', 'false');
+            }
+
+      - name: Proceed if Digest Changed
+        if: steps.check_updates.outputs.need_update == 'true'
+        run: echo "Proceeding with update since base image digest has changed."
+
+      - name: Configure Git
+        if: steps.check_updates.outputs.need_update == 'true'
+        run: |
+          git config user.name "GitHub Action Bot"
+          git config user.email "action@github.com"
+
+      - name: Create New Branch
+        if: steps.check_updates.outputs.need_update == 'true'
+        run: |
+          BRANCH_NAME="update-odoo-base-image-${{ github.run_id }}"
+          git checkout -b "$BRANCH_NAME"
+          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+
+      - name: Update Version Files
+        if: steps.check_updates.outputs.need_update == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            /**
+             * Script to update the digest files for updated versions.
+             * Author: Troy Kelly
+             * Contact: troy@aperim.com
+             */
+
+            const updatedVersions = process.env.UPDATED_VERSIONS.split(' ');
+            const versionDigests = JSON.parse('${{ steps.get_digests.outputs.version_digests }}');
+            const fs = require('fs');
+            const { execSync } = require('child_process');
+
+            for (const version of updatedVersions) {
+              const digest = versionDigests[version];
+              const fileName = `odoo_base_image_digest_v${version}.txt`;
+              fs.writeFileSync(fileName, digest);
+              execSync(`git add ${fileName}`);
+            }
+            // Commit the changes
+            execSync(`git commit -m "Update base image digests for Odoo versions ${updatedVersions.join(', ')}"`);
+
+      - name: Push Changes
+        if: steps.check_updates.outputs.need_update == 'true'
+        env:
+          # Use the default GITHUB_TOKEN for pushing the branch
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git push --set-upstream "https://${{ github.actor }}:${{ env.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" "${{ env.BRANCH_NAME }}"
+
+      - name: Create Pull Request
+        if: steps.check_updates.outputs.need_update == 'true'
+        id: create_pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            /**
+             * Script to create a pull request.
+             * Author: Troy Kelly
+             * Contact: troy@aperim.com
+             */
+
+            const branchName = process.env.BRANCH_NAME;
+            const updatedVersions = process.env.UPDATED_VERSIONS.replace(/ /g, ', ');
+            const { data: pullRequest } = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head: branchName,
+              base: 'main',
+              title: `Update base image digest for Odoo versions ${updatedVersions}`,
+              body: `This pull request updates the base image digest for Odoo versions ${updatedVersions}.`,
+              maintainer_can_modify: true,
+            });
+            console.log(`Created PR #${pullRequest.number}: ${pullRequest.html_url}`);
+            core.setOutput('pr_number', pullRequest.number);
+
+      - name: Wait for PR Checks to Succeed
+        if: steps.check_updates.outputs.need_update == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            /**
+             * Script to wait for PR checks to complete.
+             * Author: Troy Kelly
+             * Contact: troy@aperim.com
+             */
+
+            const prNumber = ${{ steps.create_pr.outputs.pr_number }};
+            const checkDelay = 30; // seconds
+            const maxAttempts = 40; // max wait time 20 minutes
+
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+              });
+              if (pr.mergeable_state === 'clean') {
+                console.log('All checks have passed.');
+                break;
+              } else if (pr.mergeable_state === 'dirty') {
+                core.setFailed('PR has conflicts and cannot be merged.');
+                return;
+              } else {
+                console.log(`Attempt ${attempt}: PR not ready to merge (state: ${pr.mergeable_state}). Retrying in ${checkDelay} seconds...`);
+                await new Promise(resolve => setTimeout(resolve, checkDelay * 1000));
+              }
+              if (attempt === maxAttempts) {
+                core.setFailed('Timeout waiting for PR checks to succeed.');
+              }
+            }
+
+      - name: Approve the PR
+        if: steps.check_updates.outputs.need_update == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.APERIM_GITHUB_CI_PAT }}  # Use the PAT of a different user
+          script: |
+            /**
+             * Script to approve the pull request.
+             * Author: Troy Kelly
+             * Contact: troy@aperim.com
+             */
+
+            const prNumber = ${{ steps.create_pr.outputs.pr_number }};
+
+            // Add a review to approve the PR
+            const { data: review } = await github.rest.pulls.createReview({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              event: 'APPROVE',
+              body: 'Automated approval by GitHub Action.',
+            });
+            console.log(`Approved PR #${prNumber}. Review ID: ${review.id}`);
+
+      - name: Merge the PR
+        if: steps.check_updates.outputs.need_update == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.APERIM_GITHUB_CI_PAT }}  # Use the same PAT
+          script: |
+            /**
+             * Script to merge the pull request.
+             * Author: Troy Kelly
+             * Contact: troy@aperim.com
+             */
+
+            const prNumber = ${{ steps.create_pr.outputs.pr_number }};
+            await github.rest.pulls.merge({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              merge_method: 'squash',
+            });
+            console.log('PR merged successfully.');
+
+      - name: Fetch Tags
+        if: steps.check_updates.outputs.need_update == 'true'
+        run: git fetch --tags
+
+      - name: Get Latest Release Tag
+        id: get_latest_tag
+        if: steps.check_updates.outputs.need_update == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            /**
+             * Script to get the latest semver tag from repository releases.
+             * Author: Troy Kelly
+             * Contact: troy@aperim.com
+             */
+
+            const semver = require('semver');
+
+            // Fetch all releases from the repository
+            const releases = await github.paginate(github.rest.repos.listReleases, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+
+            // Filter releases with valid semver tags starting with 'v'
+            const semverReleases = releases
+              .filter(r => semver.valid(semver.coerce(r.tag_name)))
+              .map(r => ({
+                tag_name: r.tag_name,
+                version: semver.coerce(r.tag_name)
+              }))
+              .filter(r => r.version !== null);
+
+            // Sort the versions in descending order
+            const sortedVersions = semverReleases.sort((a, b) => semver.rcompare(a.version, b.version));
+
+            let latestTag = null;
+            if (sortedVersions.length > 0) {
+              latestTag = sortedVersions[0].tag_name;
+            } else {
+              latestTag = 'v0.0.0';
+            }
+
+            console.log(`Latest release tag is ${latestTag}`);
+            core.setOutput('latest_tag', latestTag);
+
+      - name: Calculate New Release Version
+        id: calc_new_version
+        if: steps.check_updates.outputs.need_update == 'true'
+        shell: bash
+        run: |
+          LATEST_TAG=${{ steps.get_latest_tag.outputs.latest_tag }}
+          if [[ "$LATEST_TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            MAJOR="${BASH_REMATCH[1]}"
+            MINOR="${BASH_REMATCH[2]}"
+            PATCH="${BASH_REMATCH[3]}"
+            NEW_PATCH=$((PATCH + 1))
+            NEW_TAG="v${MAJOR}.${MINOR}.${NEW_PATCH}"
+            echo "New release tag is $NEW_TAG"
+            echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
+          else
+            echo "Failed to parse latest tag. Defaulting to v0.0.1"
+            NEW_TAG="v0.0.1"
+            echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Release
+        id: create_release
+        if: steps.check_updates.outputs.need_update == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.APERIM_GITHUB_CI_PAT }}
+          script: |
+            /**
+             * Script to create a new release.
+             * Author: Troy Kelly
+             * Contact: troy@aperim.com
+             */
+
+            const newTag = '${{ steps.calc_new_version.outputs.new_tag }}';
+            const updatedVersions = process.env.UPDATED_VERSIONS.replace(/ /g, ', ');
+            const release = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: newTag,
+              name: `Version ${newTag}`,
+              body: `Automated release for base image update. Updated Odoo versions: ${updatedVersions}.`,
+              draft: false,
+              prerelease: false,
+              target_commitish: 'main',
+            });
+            console.log(`Created release: ${release.data.html_url}`);
