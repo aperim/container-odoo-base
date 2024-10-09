@@ -1,0 +1,144 @@
+# Nginx configuration for Odoo with dynamic backend settings
+
+disable_symlinks off;
+
+map $sent_http_content_type $content_type_csp {
+    default "";
+    ~image/ "default-src 'none'";
+}
+
+# If we receive X-Forwarded-Proto, pass it through; otherwise, pass along the
+# scheme used to connect to this server
+map $http_x_forwarded_proto $proxy_x_forwarded_proto {
+  default $http_x_forwarded_proto;
+  ''      $scheme;
+}
+# If we receive X-Forwarded-Port, pass it through; otherwise, pass along the
+# server port the client connected to
+map $http_x_forwarded_port $proxy_x_forwarded_port {
+  default $http_x_forwarded_port;
+  ''      $server_port;
+}
+# If we receive Upgrade, set Connection to "upgrade"; otherwise, delete any
+# Connection header that may have been passed to this server
+map $http_upgrade $proxy_connection {
+  default upgrade;
+  '' close;
+}
+# Apply fix for very long server names
+server_names_hash_bucket_size 128;
+# Default dhparam
+# Set appropriate X-Forwarded-Ssl header
+map $scheme $proxy_x_forwarded_ssl {
+  default off;
+  https on;
+}
+
+# Dynamic resolver based on /etc/resolv.conf
+resolver {{RESOLVER}} valid=10s;
+
+# Trusting all upstream proxies
+set_real_ip_from 0.0.0.0/0;  # Trust all IPv4 addresses
+set_real_ip_from ::/0;       # Trust all IPv6 addresses
+real_ip_header X-Forwarded-For;
+real_ip_recursive on;
+
+server {
+    listen       80;
+    listen  [::]:80;
+    proxy_read_timeout 720s;
+    proxy_connect_timeout 720s;
+    proxy_send_timeout 720s;
+
+    # Logs
+    access_log /dev/stdout;
+    error_log /dev/stderr;
+
+    # Block requests for known attack URLs
+    location ~* \.(php|asp|aspx|jsp|cgi)$ {
+        return 404;
+    }
+
+    location ~* /(wp-admin|wp-login\.php|wp-content|wp-includes|xmlrpc\.php) {
+        return 404;
+    }
+
+    # Block all .well-known requests except those that Odoo actually handles
+    location ~ ^/\.well-known/ {
+        return 404;
+    }
+
+    location @odoo {
+        set $backend_servers {{ODOO_HOST}}:{{ODOO_PORT}};
+
+        # Substitution filter for changing HTTP URLs to HTTPS
+        sub_filter_types text/html text/css text/xml application/xml application/json application/javascript text/javascript;
+        sub_filter "http://$host" "https://$host";
+        sub_filter_once off;
+
+        # Add Headers for Odoo proxy mode
+        proxy_set_header Host $http_host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $proxy_connection;
+        proxy_set_header X-Forwarded-Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $proxy_x_forwarded_proto;
+        proxy_set_header X-Forwarded-Ssl $proxy_x_forwarded_ssl;
+        proxy_set_header X-Forwarded-Port $proxy_x_forwarded_port;
+
+        # Correct faulty redirects from HTTP to HTTPS
+        proxy_redirect http:// https://;
+
+        proxy_pass {{ODOO_SCHEME}}://$backend_servers;
+
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains";
+        proxy_cookie_flags session_id samesite=lax secure;
+        client_max_body_size 1G;
+    }
+
+    location /web/filestore {
+        internal;
+        alias /var/lib/odoo/filestore;
+    }
+
+    # Serve static files directly
+    location ~ ^/[^/]+/static/.+$ {
+        root /opt/odoo;
+        try_files /extras$uri /enterprise$uri /community$uri @odoo;
+        expires 24h;
+        add_header Content-Security-Policy $content_type_csp;
+    }
+
+    location / {
+        set $backend_servers {{ODOO_HOST}}:{{ODOO_PORT}};
+
+        # Substitution filter for changing HTTP URLs to HTTPS
+        sub_filter_types text/html text/css text/xml application/xml application/json application/javascript text/javascript;
+        sub_filter "http://$host" "https://$host";
+        sub_filter_once off;
+
+        # Add Headers for Odoo proxy mode
+        proxy_set_header Host $http_host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $proxy_connection;
+        proxy_set_header X-Forwarded-Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $proxy_x_forwarded_proto;
+        proxy_set_header X-Forwarded-Ssl $proxy_x_forwarded_ssl;
+        proxy_set_header X-Forwarded-Port $proxy_x_forwarded_port;
+
+        # Correct faulty redirects from HTTP to HTTPS
+        proxy_redirect http:// https://;
+
+        proxy_pass {{ODOO_SCHEME}}://$backend_servers;
+
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains";
+        proxy_cookie_flags session_id samesite=lax secure;
+        client_max_body_size 1G;
+    }
+
+    gzip_types text/css text/scss text/plain text/xml application/xml application/json application/javascript;
+    gzip on;  
+}

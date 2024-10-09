@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+
+    <record id="website_config_settings_view_form" model="ir.ui.view">
+        <field name="name">website.config.settings.view.form.inherit.website_google_tag</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="website.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//div[@id='google_analytics_setting']" position="after">
+                <div class="col-12 col-lg-6 o_setting_box" id="google_tag_manager_setting">
+                    <div class="o_setting_left_pane">
+                        <field name="has_google_tag_manager"/>
+                    </div>
+                    <div class="o_setting_right_pane">
+                        <label for="has_google_tag_manager"/>
+                        <a href="https://support.google.com/tagmanager/answer/6103696" title="Documentation: Set up and install Tag Manager" class="o_doc_link" target="_blank"></a>
+                        <div class="text-muted">
+                            Configure and deploy tags from Google products and third parties
+                        </div>
+                        <div class="content-group" attrs="{'invisible': [('has_google_tag_manager', '=', False)]}" name="gtm_key_setting">
+                            <div class="row mt16">
+                                <label class="col-lg-3 o_light_label" string="Container ID" for="gtm_container_key"/>
+                                <field name="gtm_container_key" placeholder="GTM-XXXXXXXXXX" attrs="{'required': [('has_google_tag_manager', '=', True)]}"/>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </xpath>
+        </field>
+    </record>
+
+</odoo>

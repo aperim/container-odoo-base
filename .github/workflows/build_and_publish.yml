@@ -1,0 +1,342 @@
+# .github/workflows/build_and_publish.yml
+name: Build and Publish Containers
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - .devcontainer/**
+      - .github/**
+      - .vscode/**
+  push:
+    branches: [main]
+    paths-ignore:
+      - .devcontainer/**
+      - .github/**
+      - .vscode/**
+  release:
+    types: [published]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        version_major: [16, 17, 18]
+        version_minor: [0]
+    permissions:
+      id-token: write
+      packages: write
+      contents: read
+      attestations: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch full history for versioning and labels
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          install: true  # Ensures Buildx is set up
+
+      - name: Get Current Timestamp
+        id: get_timestamp
+        run: echo "build_timestamp=$(date +%s)" >> $GITHUB_OUTPUT
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Build Variables
+        id: vars
+        run: |
+          echo "Setting up build variables..."
+          BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          COMMIT_SHA="${{ github.sha }}"
+          REPO_URL="${{ github.repositoryUrl }}"
+          echo "BUILD_DATE=${BUILD_DATE}" >> $GITHUB_ENV
+          echo "COMMIT_SHA=${COMMIT_SHA}" >> $GITHUB_ENV
+          echo "REPO_URL=${REPO_URL}" >> $GITHUB_ENV
+          
+          # Determine VERSION and TAG_LIST
+          echo "Determining version and tags..."
+          TAG_LIST=()
+
+          ODOO_VERSION="${{ matrix.version_major }}.${{ matrix.version_minor }}"
+
+          if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
+            echo "Event is a release"
+            RELEASE_VERSION="${{ github.event.release.tag_name }}"
+            # Extract semver components from RELEASE_VERSION
+            IFS='.' read -ra VER_COMPONENTS <<< "$RELEASE_VERSION"
+            REL_MAJOR="${VER_COMPONENTS[0]}"
+            REL_MINOR="${VER_COMPONENTS[1]}"
+            REL_PATCH="${VER_COMPONENTS[2]}"
+
+            # Build tag list
+            TAG_LIST+=("${ODOO_VERSION}")
+
+            if [[ -n "${REL_MAJOR}" ]]; then
+              TAG_LIST+=("${ODOO_VERSION}-${REL_MAJOR}")
+            fi
+            if [[ -n "${REL_MAJOR}" && -n "${REL_MINOR}" ]]; then
+              TAG_LIST+=("${ODOO_VERSION}-${REL_MAJOR}.${REL_MINOR}")
+            fi
+            if [[ -n "${REL_MAJOR}" && -n "${REL_MINOR}" && -n "${REL_PATCH}" ]]; then
+              TAG_LIST+=("${ODOO_VERSION}-${REL_MAJOR}.${REL_MINOR}.${REL_PATCH}")
+            fi
+
+            # For latest Odoo version, add "latest" tag
+            if [[ "${ODOO_VERSION}" == "18.0" ]]; then
+              TAG_LIST+=("latest")
+            fi
+
+            VERSION="${REL_MAJOR}.${REL_MINOR}.${REL_PATCH}"
+
+          elif [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            echo "On main branch"
+            VERSION="edge"
+            TAG_LIST+=("${ODOO_VERSION}-edge")
+          elif [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            PR_BRANCH="${GITHUB_HEAD_REF}"
+            echo "Pull request from branch ${PR_BRANCH}"
+            VERSION="${PR_BRANCH}"
+            TAG_LIST+=("${ODOO_VERSION}-${PR_BRANCH}")
+          elif [[ "${GITHUB_REF_TYPE}" == "branch" ]]; then
+            BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+            echo "On branch ${BRANCH_NAME}"
+            VERSION="${BRANCH_NAME}"
+            TAG_LIST+=("${ODOO_VERSION}-${BRANCH_NAME}")
+          else
+            echo "Event not matched, defaulting to 'dev'"
+            VERSION="dev"
+            TAG_LIST+=("${ODOO_VERSION}-dev")
+          fi
+
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+
+          # Remove duplicates from TAG_LIST
+          TAG_LIST=($(printf "%s\n" "${TAG_LIST[@]}" | sort -u))
+
+          ODOO_IMAGE_NAME="ghcr.io/${{ github.repository_owner }}/odoo-base"
+          NGINX_IMAGE_NAME="ghcr.io/${{ github.repository_owner }}/odoo-nginx-base"
+
+          echo "ODOO_IMAGE_NAME=${ODOO_IMAGE_NAME}" >> $GITHUB_ENV
+          echo "NGINX_IMAGE_NAME=${NGINX_IMAGE_NAME}" >> $GITHUB_ENV
+
+          # Generate tag lists for community and enterprise images
+          ODOO_COMMUNITY_IMAGE_TAGS=""
+          ODOO_ENTERPRISE_IMAGE_TAGS=""
+          NGINX_COMMUNITY_IMAGE_TAGS=""
+          NGINX_ENTERPRISE_IMAGE_TAGS=""
+
+          for TAG in "${TAG_LIST[@]}"; do
+            ODOO_COMMUNITY_IMAGE_TAGS+="${ODOO_IMAGE_NAME}:${TAG}\n"
+            ODOO_ENTERPRISE_IMAGE_TAGS+="${ODOO_IMAGE_NAME}:${TAG}e\n"
+
+            NGINX_COMMUNITY_IMAGE_TAGS+="${NGINX_IMAGE_NAME}:${TAG}\n"
+            NGINX_ENTERPRISE_IMAGE_TAGS+="${NGINX_IMAGE_NAME}:${TAG}e\n"
+          done
+
+          echo "ODOO_COMMUNITY_IMAGE_TAGS<<EOF" >> $GITHUB_OUTPUT
+          echo -e "${ODOO_COMMUNITY_IMAGE_TAGS}" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          echo "ODOO_ENTERPRISE_IMAGE_TAGS<<EOF" >> $GITHUB_OUTPUT
+          echo -e "${ODOO_ENTERPRISE_IMAGE_TAGS}" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          echo "NGINX_COMMUNITY_IMAGE_TAGS<<EOF" >> $GITHUB_OUTPUT
+          echo -e "${NGINX_COMMUNITY_IMAGE_TAGS}" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          echo "NGINX_ENTERPRISE_IMAGE_TAGS<<EOF" >> $GITHUB_OUTPUT
+          echo -e "${NGINX_ENTERPRISE_IMAGE_TAGS}" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          # Extract the first tag from the community image tags for source images
+          SOURCE_IMAGE_ODOO=$(echo -e "${ODOO_COMMUNITY_IMAGE_TAGS}" | head -n1)
+          SOURCE_IMAGE_NGINX=$(echo -e "${NGINX_COMMUNITY_IMAGE_TAGS}" | head -n1)
+          echo "SOURCE_IMAGE_ODOO=${SOURCE_IMAGE_ODOO}" >> $GITHUB_ENV
+          echo "SOURCE_IMAGE_NGINX=${SOURCE_IMAGE_NGINX}" >> $GITHUB_ENV
+
+      - name: Cache Python dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install Python dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run Python tests
+        shell: bash
+        run: |
+          echo "Running tests..."
+          if [[ "${GITHUB_REF}" == "refs/heads/main" ]] || [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
+            echo "Strict mode for tests; failing on test failures."
+            set -e
+            python3 -m unittest discover tests
+          else
+            echo "Non-strict mode for tests; not failing on test failures."
+            set +e
+            python3 -m unittest discover tests
+          fi
+
+      - name: Run builder prep script
+        env:
+          ODOO_MAJOR_VERSION: ${{ matrix.version_major }}
+          ODOO_MINOR_VERSION: ${{ matrix.version_minor }}
+          ODOO_COMMUNITY_REPOSITORY: "github.com/odoo/odoo"
+          ODOO_ENTERPRISE_REPOSITORY: "github.com/odoo/enterprise"
+          GITHUB_TOKEN: ${{ secrets.APERIM_GITHUB_CI_PAT }}
+          GEOIPUPDATE_ACCOUNT_ID: ${{ secrets.GEOIPUPDATE_ACCOUNT_ID }}
+          GEOIPUPDATE_LICENSE_KEY: ${{ secrets.GEOIPUPDATE_LICENSE_KEY }}
+        run: python3 builder/src/main.py
+
+      # Build and Push Community Odoo Container
+      - name: Build and Push Community Odoo Container
+        id: odoo_community_push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.c.odoo
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.vars.outputs.ODOO_COMMUNITY_IMAGE_TAGS }}
+          build-args: |
+            ODOO_MAJOR_VERSION=${{ matrix.version_major }}
+            ODOO_MINOR_VERSION=${{ matrix.version_minor }}
+            BUILD_DATE=${{ env.BUILD_DATE }}
+            VCS_REF=${{ env.COMMIT_SHA }}
+            VERSION=${{ env.VERSION }}
+            REPO_URL=${{ env.REPO_URL }}
+            BUILD_TIMESTAMP=${{ steps.get_timestamp.outputs.build_timestamp }}
+          labels: |
+            org.opencontainers.image.created=${{ env.BUILD_DATE }}
+            org.opencontainers.image.url=${{ env.REPO_URL }}
+            org.opencontainers.image.source=${{ env.REPO_URL }}
+            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.revision=${{ env.COMMIT_SHA }}
+            org.opencontainers.image.vendor="${{ github.repository_owner }}"
+            org.opencontainers.image.title="Odoo ${{ matrix.version_major }}.${{ matrix.version_minor }}"
+            org.opencontainers.image.description="Odoo ${{ matrix.version_major }}.${{ matrix.version_minor }} Community Container"
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Attest Odoo Container
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: ${{ env.ODOO_IMAGE_NAME }}
+          subject-digest: ${{ steps.odoo_community_push.outputs.digest }}
+          push-to-registry: true
+
+      # Build and Push Community Nginx Container
+      - name: Build and Push Community Nginx Container
+        id: odoo_community_nginx_push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.c.nginx
+          platforms: linux/amd64,linux/arm64,linux/ppc64le
+          push: true
+          tags: |
+            ${{ steps.vars.outputs.NGINX_COMMUNITY_IMAGE_TAGS }}
+          build-args: |
+            ODOO_MAJOR_VERSION=${{ matrix.version_major }}
+            ODOO_MINOR_VERSION=${{ matrix.version_minor }}
+            BUILD_DATE=${{ env.BUILD_DATE }}
+            VCS_REF=${{ env.COMMIT_SHA }}
+            VERSION=${{ env.VERSION }}
+            REPO_URL=${{ env.REPO_URL }}
+          labels: |
+            org.opencontainers.image.created=${{ env.BUILD_DATE }}
+            org.opencontainers.image.url=${{ env.REPO_URL }}
+            org.opencontainers.image.source=${{ env.REPO_URL }}
+            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.revision=${{ env.COMMIT_SHA }}
+            org.opencontainers.image.vendor="${{ github.repository_owner }}"
+            org.opencontainers.image.title="Odoo Nginx ${{ matrix.version_major }}.${{ matrix.version_minor }}"
+            org.opencontainers.image.description="Nginx Container for Odoo ${{ matrix.version_major }}.${{ matrix.version_minor }} Community"
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Attest Nginx Container
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: ${{ env.NGINX_IMAGE_NAME }}
+          subject-digest: ${{ steps.odoo_community_nginx_push.outputs.digest }}
+          push-to-registry: true
+
+      # Build and Push Enterprise Odoo Container
+      - name: Build and Push Enterprise Odoo Container
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.e.odoo
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.vars.outputs.ODOO_ENTERPRISE_IMAGE_TAGS }}
+          build-args: |
+            SOURCE_IMAGE=${{ env.SOURCE_IMAGE_ODOO }}
+            BUILD_DATE=${{ env.BUILD_DATE }}
+            VCS_REF=${{ env.COMMIT_SHA }}
+            VERSION=${{ env.VERSION }}
+            REPO_URL=${{ env.REPO_URL }}
+            BUILD_TIMESTAMP=${{ steps.get_timestamp.outputs.build_timestamp }}
+          labels: |
+            org.opencontainers.image.created=${{ env.BUILD_DATE }}
+            org.opencontainers.image.url=${{ env.REPO_URL }}
+            org.opencontainers.image.source=${{ env.REPO_URL }}
+            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.revision=${{ env.COMMIT_SHA }}
+            org.opencontainers.image.vendor="${{ github.repository_owner }}"
+            org.opencontainers.image.title="Odoo ${{ matrix.version_major }}.${{ matrix.version_minor }}e"
+            org.opencontainers.image.description="Odoo ${{ matrix.version_major }}.${{ matrix.version_minor }} Enterprise Container"
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Build and Push Enterprise Nginx Container
+      - name: Build and Push Enterprise Nginx Container
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.e.nginx
+          platforms: linux/amd64,linux/arm64,linux/ppc64le
+          push: true
+          tags: |
+            ${{ steps.vars.outputs.NGINX_ENTERPRISE_IMAGE_TAGS }}
+          build-args: |
+            SOURCE_IMAGE=${{ env.SOURCE_IMAGE_NGINX }}
+            BUILD_DATE=${{ env.BUILD_DATE }}
+            VCS_REF=${{ env.COMMIT_SHA }}
+            VERSION=${{ env.VERSION }}
+            REPO_URL=${{ env.REPO_URL }}
+          labels: |
+            org.opencontainers.image.created=${{ env.BUILD_DATE }}
+            org.opencontainers.image.url=${{ env.REPO_URL }}
+            org.opencontainers.image.source=${{ env.REPO_URL }}
+            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.revision=${{ env.COMMIT_SHA }}
+            org.opencontainers.image.vendor="${{ github.repository_owner }}"
+            org.opencontainers.image.title="Odoo Nginx ${{ matrix.version_major }}.${{ matrix.version_minor }}e"
+            org.opencontainers.image.description="Nginx Container for Odoo ${{ matrix.version_major }}.${{ matrix.version_minor }} Enterprise"
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
