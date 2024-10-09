@@ -386,3 +386,36 @@ jobs:
             org.opencontainers.image.description="Nginx Container for Odoo ${{ matrix.version_major }}.${{ matrix.version_minor }} Enterprise"
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  notify-repos:
+    needs: build-and-publish
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'release' && needs.build-and-publish.result == 'success' }}
+    steps:
+      - name: Send repository_dispatch events to list of repos
+        env:
+          REPOSITORIES_TO_PING: ${{ secrets.REPOSITORIES_TO_PING }}
+          PAT_FOR_PINGING: ${{ secrets.APERIM_GITHUB_CI_PAT }}
+          CURRENT_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [ -z "${REPOSITORIES_TO_PING}" ]; then
+            echo "No repositories to ping."
+            exit 0
+          fi
+          echo "Repositories to ping: ${REPOSITORIES_TO_PING}"
+          # Replace commas and/or spaces with newlines, then loop over lines
+          echo "${REPOSITORIES_TO_PING}" | tr ',\n' ' ' | tr ' ' '\n' | while read -r REPO; do
+            REPO=$(echo "$REPO" | xargs) # Trim whitespace
+            if [ ! -z "$REPO" ]; then
+              echo "Pinging repository: $REPO"
+              # Prepare the payload
+              PAYLOAD="{\"event_type\": \"container_updated\", \"client_payload\": { \"repository\": \"${CURRENT_REPO}\", \"release_tag\": \"${RELEASE_TAG}\" }}"
+              # Send repository_dispatch event
+              curl -X POST \
+                -H "Authorization: token ${PAT_FOR_PINGING}" \
+                -H "Accept: application/vnd.github+json" \
+                https://api.github.com/repos/${REPO}/dispatches \
+                -d "${PAYLOAD}"
+            fi
+          done
