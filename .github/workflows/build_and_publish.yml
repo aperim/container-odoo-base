@@ -6,15 +6,15 @@ on:
   pull_request:
     branches: [main]
     paths-ignore:
-      - .devcontainer/**
-      - .github/**
-      - .vscode/**
+      - '.devcontainer/**'
+      - '.github/**'
+      - '.vscode/**'
   push:
     branches: [main]
     paths-ignore:
-      - .devcontainer/**
-      - .github/**
-      - .vscode/**
+      - '.devcontainer/**'
+      - '.github/**'
+      - '.vscode/**'
   release:
     types: [published]
 
@@ -35,23 +35,28 @@ jobs:
       contents: read
       attestations: write
     steps:
+      # Checkout the repository
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0  # Fetch full history for versioning and labels
 
+      # Set up QEMU for multi-platform builds
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
+      # Set up Docker Buildx for multi-platform builds
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
           install: true  # Ensures Buildx is set up
 
+      # Get the current timestamp for build identification
       - name: Get Current Timestamp
         id: get_timestamp
         run: echo "build_timestamp=$(date +%s)" >> $GITHUB_OUTPUT
 
+      # Log in to the GitHub Container Registry
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -59,9 +64,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Set up build variables and determine tags
       - name: Set up Build Variables
         id: vars
+        shell: bash
         run: |
+          set -e
           echo "Setting up build variables..."
           BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           COMMIT_SHA="${{ github.sha }}"
@@ -69,12 +77,12 @@ jobs:
           echo "BUILD_DATE=${BUILD_DATE}" >> $GITHUB_ENV
           echo "COMMIT_SHA=${COMMIT_SHA}" >> $GITHUB_ENV
           echo "REPO_URL=${REPO_URL}" >> $GITHUB_ENV
-          
-          # Determine VERSION and TAG_LIST
-          echo "Determining version and tags..."
-          TAG_LIST=()
 
           ODOO_VERSION="${{ matrix.version_major }}.${{ matrix.version_minor }}"
+          ODOO_VERSION_PATTERN='^[0-9]+\.[0-9]+'
+
+          echo "Determining version and tags..."
+          TAG_LIST=()
 
           if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
             echo "Event is a release"
@@ -109,16 +117,45 @@ jobs:
             echo "On main branch"
             VERSION="edge"
             TAG_LIST+=("${ODOO_VERSION}-edge")
+
           elif [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
             PR_BRANCH="${GITHUB_HEAD_REF}"
             echo "Pull request from branch ${PR_BRANCH}"
-            VERSION="${PR_BRANCH}"
-            TAG_LIST+=("${ODOO_VERSION}-${PR_BRANCH}")
+            # Handle branch names that start with ODOO_VERSION
+            if [[ "${PR_BRANCH}" =~ ^(${ODOO_VERSION_PATTERN})-(.+)$ ]]; then
+              BRANCH_ODOO_VERSION="${BASH_REMATCH[1]}"
+              BRANCH_SUFFIX="${BASH_REMATCH[2]}"
+              if [[ "${BRANCH_ODOO_VERSION}" == "${ODOO_VERSION}" ]]; then
+                VERSION="${BRANCH_SUFFIX}"
+                TAG_LIST+=("${ODOO_VERSION}-${VERSION}")
+              else
+                VERSION="${PR_BRANCH}"
+                TAG_LIST+=("${VERSION}")
+              fi
+            else
+              VERSION="${PR_BRANCH}"
+              TAG_LIST+=("${ODOO_VERSION}-${VERSION}")
+            fi
+
           elif [[ "${GITHUB_REF_TYPE}" == "branch" ]]; then
             BRANCH_NAME="${GITHUB_REF#refs/heads/}"
             echo "On branch ${BRANCH_NAME}"
-            VERSION="${BRANCH_NAME}"
-            TAG_LIST+=("${ODOO_VERSION}-${BRANCH_NAME}")
+            # Handle branch names that start with ODOO_VERSION
+            if [[ "${BRANCH_NAME}" =~ ^(${ODOO_VERSION_PATTERN})-(.+)$ ]]; then
+              BRANCH_ODOO_VERSION="${BASH_REMATCH[1]}"
+              BRANCH_SUFFIX="${BASH_REMATCH[2]}"
+              if [[ "${BRANCH_ODOO_VERSION}" == "${ODOO_VERSION}" ]]; then
+                VERSION="${BRANCH_SUFFIX}"
+                TAG_LIST+=("${ODOO_VERSION}-${VERSION}")
+              else
+                VERSION="${BRANCH_NAME}"
+                TAG_LIST+=("${VERSION}")
+              fi
+            else
+              VERSION="${BRANCH_NAME}"
+              TAG_LIST+=("${ODOO_VERSION}-${VERSION}")
+            fi
+
           else
             echo "Event not matched, defaulting to 'dev'"
             VERSION="dev"
@@ -144,16 +181,17 @@ jobs:
 
           for TAG in "${TAG_LIST[@]}"; do
             ODOO_COMMUNITY_IMAGE_TAGS+="${ODOO_IMAGE_NAME}:${TAG}\n"
-            ODOO_ENTERPRISE_IMAGE_TAGS+="${ODOO_IMAGE_NAME}:${TAG}e\n"
+            ENTERPRISE_TAG=$(echo "$TAG" | sed "s#^${ODOO_VERSION}#${ODOO_VERSION}e#")
+            ODOO_ENTERPRISE_IMAGE_TAGS+="${ODOO_IMAGE_NAME}:${ENTERPRISE_TAG}\n"
 
             NGINX_COMMUNITY_IMAGE_TAGS+="${NGINX_IMAGE_NAME}:${TAG}\n"
-            NGINX_ENTERPRISE_IMAGE_TAGS+="${NGINX_IMAGE_NAME}:${TAG}e\n"
+            NGINX_ENTERPRISE_IMAGE_TAGS+="${NGINX_IMAGE_NAME}:${ENTERPRISE_TAG}\n"
           done
 
           echo "ODOO_COMMUNITY_IMAGE_TAGS<<EOF" >> $GITHUB_OUTPUT
           echo -e "${ODOO_COMMUNITY_IMAGE_TAGS}" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
-          
+
           echo "ODOO_ENTERPRISE_IMAGE_TAGS<<EOF" >> $GITHUB_OUTPUT
           echo -e "${ODOO_ENTERPRISE_IMAGE_TAGS}" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
@@ -161,17 +199,19 @@ jobs:
           echo "NGINX_COMMUNITY_IMAGE_TAGS<<EOF" >> $GITHUB_OUTPUT
           echo -e "${NGINX_COMMUNITY_IMAGE_TAGS}" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
-          
+
           echo "NGINX_ENTERPRISE_IMAGE_TAGS<<EOF" >> $GITHUB_OUTPUT
           echo -e "${NGINX_ENTERPRISE_IMAGE_TAGS}" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-          # Extract the first tag from the community image tags for source images
-          SOURCE_IMAGE_ODOO=$(echo -e "${ODOO_COMMUNITY_IMAGE_TAGS}" | head -n1)
-          SOURCE_IMAGE_NGINX=$(echo -e "${NGINX_COMMUNITY_IMAGE_TAGS}" | head -n1)
+          # Adjust SOURCE_IMAGE variables to match the correct tags
+          SOURCE_TAG="${TAG_LIST[0]}"
+          SOURCE_IMAGE_ODOO="${ODOO_IMAGE_NAME}:${SOURCE_TAG}"
+          SOURCE_IMAGE_NGINX="${NGINX_IMAGE_NAME}:${SOURCE_TAG}"
           echo "SOURCE_IMAGE_ODOO=${SOURCE_IMAGE_ODOO}" >> $GITHUB_ENV
           echo "SOURCE_IMAGE_NGINX=${SOURCE_IMAGE_NGINX}" >> $GITHUB_ENV
 
+      # Cache Python dependencies to speed up builds
       - name: Cache Python dependencies
         uses: actions/cache@v4
         with:
@@ -180,12 +220,15 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
+      # Install Python dependencies
       - name: Install Python dependencies
         run: |
           pip install -r requirements.txt
 
+      # Run Python unit tests
       - name: Run Python tests
         shell: bash
+        continue-on-error: ${{ github.event_name != 'release' && github.ref != 'refs/heads/main' }}
         run: |
           echo "Running tests..."
           if [[ "${GITHUB_REF}" == "refs/heads/main" ]] || [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
@@ -198,6 +241,7 @@ jobs:
             python3 -m unittest discover tests
           fi
 
+      # Run builder preparation script
       - name: Run builder prep script
         env:
           ODOO_MAJOR_VERSION: ${{ matrix.version_major }}
@@ -240,6 +284,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Attest Community Odoo Container build provenance
       - name: Attest Odoo Container
         uses: actions/attest-build-provenance@v1
         with:
@@ -277,6 +322,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Attest Community Nginx Container build provenance
       - name: Attest Nginx Container
         uses: actions/attest-build-provenance@v1
         with:

@@ -64,6 +64,8 @@ RUN sed -i "/en_US.UTF-8/s/^# //g" /etc/locale.gen && \
 
 COPY --chown=odoo:odoo rootfs/usr/share/GeoIP /usr/share/GeoIP
 COPY --chown=odoo:odoo rootfs/usr/share/odoo/community /usr/share/odoo/community
+COPY --chown=odoo:odoo rootfs/usr/share/odoo/extras /usr/share/odoo/extras
+
 ARG ODOO_MAJOR_VERSION=17
 ARG ODOO_MINOR_VERSION=0
 COPY --chown=odoo:odoo extras/${ODOO_MAJOR_VERSION}.${ODOO_MINOR_VERSION} /usr/share/odoo/extras
