@@ -3,6 +3,7 @@ FROM nginx:${NGINX_VERSION:-latest}
 
 COPY --chown=nginx:nginx rootfs/usr/share/GeoIP /usr/share/GeoIP
 COPY --chown=nginx:nginx rootfs/usr/share/odoo/community /usr/share/odoo/community
+COPY --chown=nginx:nginx rootfs/usr/share/odoo/extras /usr/share/odoo/extras
 
 ARG ODOO_MAJOR_VERSION=17
 ARG ODOO_MINOR_VERSION=0
