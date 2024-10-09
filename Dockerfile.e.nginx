@@ -1,21 +1,13 @@
 ARG NGINX_VERSION=latest
-FROM nginx:${NGINX_VERSION:-latest}
+ARG SOURCE_IMAGE=nginx:${NGINX_VERSION:-latest}
+FROM ${SOURCE_IMAGE}
 
-COPY --chown=nginx:nginx rootfs/usr/share/GeoIP /usr/share/GeoIP
-COPY --chown=nginx:nginx rootfs/usr/share/odoo /usr/share/odoo
-ARG ODOO_MAJOR_VERSION=17
-ARG ODOO_MINOR_VERSION=0
-COPY --chown=nginx:nginx extras/${ODOO_MAJOR_VERSION}.${ODOO_MINOR_VERSION} /usr/share/odoo/extras
-
-COPY nginx/rootfs/etc/nginx/conf.d /etc/nginx/conf.d
-COPY nginx/rootfs/usr/local/sbin /usr/local/sbin
+COPY --chown=nginx:nginx rootfs/usr/share/odoo/enterprise /usr/share/odoo/enterprise
 
 RUN mkdir -p /opt/odoo && \
     chown nginx:nginx /opt/odoo && \
     chmod 755 /opt/odoo && \
-    ln -s /usr/share/odoo/community /opt/odoo/community && \
-    ln -s /usr/share/odoo/enterprise /opt/odoo/enterprise && \
-    ln -s /usr/share/odoo/extras /opt/odoo/extras
+    ln -s /usr/share/odoo/enterprise /opt/odoo/enterprise
 
 # Build arguments for labels
 ARG BUILD_DATE
@@ -30,8 +22,8 @@ LABEL org.opencontainers.image.created=$BUILD_DATE \
     org.opencontainers.image.version=$VERSION \
     org.opencontainers.image.revision=$VCS_REF \
     org.opencontainers.image.vendor="Aperim Pty Ltd" \
-    org.opencontainers.image.title="Odoo $ODOO_MAJOR_VERSION" \
-    org.opencontainers.image.description="Odoo $ODOO_MAJOR_VERSION Container"
+    org.opencontainers.image.title="Odoo $ODOO_MAJOR_VERSION Enterprise Nginx Container" \
+    org.opencontainers.image.description="Odoo $ODOO_MAJOR_VERSION Enterprise Nginx Container"
 
 EXPOSE 80
 ENTRYPOINT [ "/usr/local/sbin/entrypoint" ]
