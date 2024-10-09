@@ -211,6 +211,7 @@ jobs:
 
       # Build and Push Community Odoo Container
       - name: Build and Push Community Odoo Container
+        id: odoo_community_push
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -239,8 +240,16 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Attest Odoo Container
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: ${{ env.ODOO_IMAGE_NAME }}
+          subject-digest: ${{ steps.odoo_community_push.outputs.digest }}
+          push-to-registry: true
+
       # Build and Push Community Nginx Container
       - name: Build and Push Community Nginx Container
+        id: odoo_community_nginx_push
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -267,6 +276,13 @@ jobs:
             org.opencontainers.image.description="Nginx Container for Odoo ${{ matrix.version_major }}.${{ matrix.version_minor }} Community"
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Attest Nginx Container
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: ${{ env.NGINX_IMAGE_NAME }}
+          subject-digest: ${{ steps.odoo_community_nginx_push.outputs.digest }}
+          push-to-registry: true
 
       # Build and Push Enterprise Odoo Container
       - name: Build and Push Enterprise Odoo Container

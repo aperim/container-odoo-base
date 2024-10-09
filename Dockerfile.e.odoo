@@ -6,8 +6,8 @@ FROM ${SOURCE_IMAGE}
 COPY --chown=odoo:odoo rootfs/usr/share/odoo/enterprise /usr/share/odoo/enterprise
 
 RUN mkdir -p /opt/odoo && \
-    chown -R odoo:odoo /opt/odoo && \
-    ln -s /usr/share/odoo/enterprise /opt/odoo/enterprise
+    ln -s /usr/share/odoo/enterprise /opt/odoo/enterprise && \
+    chown -R odoo:odoo /opt/odoo /usr/share/odoo/enterprise
 
 # Accept build argument
 ARG BUILD_TIMESTAMP

@@ -5,8 +5,8 @@ FROM ${SOURCE_IMAGE}
 COPY --chown=nginx:nginx rootfs/usr/share/odoo/enterprise /usr/share/odoo/enterprise
 
 RUN mkdir -p /opt/odoo && \
-    chown nginx:nginx /opt/odoo && \
-    chmod 755 /opt/odoo && \
+    chown nginx:nginx /usr/share/odoo/enterprise && \
+    chmod 755 /usr/share/odoo/enterprise && \
     ln -s /usr/share/odoo/enterprise /opt/odoo/enterprise
 
 # Build arguments for labels

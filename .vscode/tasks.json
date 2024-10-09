@@ -5,7 +5,7 @@
         {
             "label": "Build Odoo Test Container",
             "type": "shell",
-            "command": "docker build --build-arg ODOO_MAJOR_VERSION=${env:ODOO_MAJOR_VERSION} --build-arg ODOO_MINOR_VERSION=${env:ODOO_MINOR_VERSION} --build-arg ODOO_ADDONS_TIMESTAMP=$(date +%s) -t odoo-testing:${env:ODOO_MAJOR_VERSION}-${env:ODOO_MINOR_VERSION}e -f Dockerfile.e.odoo .",
+            "command": "docker build --build-arg ODOO_MAJOR_VERSION=${env:ODOO_MAJOR_VERSION} --build-arg ODOO_MINOR_VERSION=${env:ODOO_MINOR_VERSION} --build-arg ODOO_ADDONS_TIMESTAMP=$(date +%s) -t odoo-testing:${env:ODOO_MAJOR_VERSION}-${env:ODOO_MINOR_VERSION} -f Dockerfile.c.odoo . && docker build --build-arg ODOO_MAJOR_VERSION=${env:ODOO_MAJOR_VERSION} --build-arg ODOO_MINOR_VERSION=${env:ODOO_MINOR_VERSION} --build-arg SOURCE_IMAGE=odoo-testing:${env:ODOO_MAJOR_VERSION}-${env:ODOO_MINOR_VERSION} --build-arg ODOO_ADDONS_TIMESTAMP=$(date +%s) -t odoo-testing:${env:ODOO_MAJOR_VERSION}-${env:ODOO_MINOR_VERSION}e -f Dockerfile.e.odoo .",
             "problemMatcher": [],
             "group": {
                 "kind": "build",

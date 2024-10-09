@@ -69,9 +69,9 @@ ARG ODOO_MINOR_VERSION=0
 COPY --chown=odoo:odoo extras/${ODOO_MAJOR_VERSION}.${ODOO_MINOR_VERSION} /usr/share/odoo/extras
 
 RUN mkdir -p /opt/odoo && \
-    chown -R odoo:odoo /opt/odoo && \
     ln -s /usr/share/odoo/community /opt/odoo/community && \
-    ln -s /usr/share/odoo/extras /opt/odoo/extras
+    ln -s /usr/share/odoo/extras /opt/odoo/extras && \
+    chown -R odoo:odoo /opt/odoo /usr/share/odoo/community /usr/share/odoo/extras
 
 COPY --from=scripts /usr/local/sbin /usr/local/sbin
 
