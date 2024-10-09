@@ -61,7 +61,6 @@ class ExtraEntry(TypedDict, total=False):
 EXTRAS: List[ExtraEntry] = [
     {
         'repo': 'github.com/productioncity/odoo-addon-salutation',
-        'branch': 'main',
         'addons': ['salutation', 'salutation_marketing'],
         'private': True
     },
@@ -325,6 +324,9 @@ def process_extras() -> None:
         print('GITHUB_TOKEN is not set. Skipping EXTRAS processing.', file=sys.stderr)
         return
 
+    odoo_major_version = os.getenv('ODOO_MAJOR_VERSION')
+    odoo_minor_version = os.getenv('ODOO_MINOR_VERSION')
+
     for extra in EXTRAS:
         repo = extra.get('repo')
         addons = extra.get('addons', [])
@@ -332,7 +334,7 @@ def process_extras() -> None:
             print(f"Warning: 'repo' or 'addons' key not found in extra {extra}. Skipping.", file=sys.stderr)
             continue
 
-        branch = extra.get('branch', 'main')
+        branch = f"{odoo_major_version}.{odoo_minor_version}"
         is_private = extra.get('private', False)
         repo_url = get_repo_url(repo)
 
