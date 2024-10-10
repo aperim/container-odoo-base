@@ -338,14 +338,6 @@ def dump_database(db_name, dump_name, core_count):
 
     clean_dump(dump_name)
 
-    # Set PostgreSQL environment variables
-    export PGPASSWORD = "${POSTGRES_PASSWORD:-}"
-    export PGHOST = "${POSTGRES_HOST:-}"
-    export PGPORT = "${POSTGRES_PORT:-}"
-    export PGUSER = "${POSTGRES_USER:-}"
-    export PGDATABASE = "${db_name}"
-    export PGSSLMODE = "${POSTGRES_SSL_MODE:-disable}"
-
     try:
         run_command(
             [
