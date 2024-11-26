@@ -186,17 +186,33 @@ extract_backup_info() {
   local backup_file="$1"
   local backup_filename
   local backup_basename
-  local backup_without_timestamp
-  local backup_timestamp
-
-  backup_filename="$(basename "${backup_file}")"
-  backup_basename="${backup_filename%.*.*}"  # Remove .tar.gz
-  backup_timestamp="${backup_basename: -14}"
-  backup_without_timestamp="${backup_basename%"${backup_timestamp}"}"
-  backup_without_timestamp="${backup_without_timestamp%_}"
+  local parts
+  local len
   
-  BACKUP_ODOO_VERSION="${backup_without_timestamp##*_}"
-  BACKUP_DATABASE="${backup_without_timestamp%_*}"
+  backup_filename="$(basename "${backup_file}")"
+  backup_basename="${backup_filename%.tar.gz}"  # Remove .tar.gz
+
+  IFS='_' read -ra parts <<< "${backup_basename}"
+  len="${#parts[@]}"
+
+  if (( len < 3 )); then
+    echo "Error: Invalid backup filename format."
+    exit 1
+  fi
+
+  BACKUP_TIMESTAMP="${parts[$len-1]}"
+  BACKUP_ODOO_VERSION="${parts[$len-2]}"
+  
+  # Join all parts except the last two to reconstruct the database name
+  BACKUP_DATABASE="${parts[0]}"
+  for (( i=1; i<($len-2); i++ )); do
+    BACKUP_DATABASE="${BACKUP_DATABASE}_${parts[i]}"
+  done
+
+  echo "Backup info extracted:"
+  echo "  Database: ${BACKUP_DATABASE}"
+  echo "  Odoo Version: ${BACKUP_ODOO_VERSION}"
+  echo "  Timestamp: ${BACKUP_TIMESTAMP}"
 }
 
 compare_odoo_version() {
