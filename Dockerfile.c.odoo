@@ -1,6 +1,6 @@
 ARG ODOO_MAJOR_VERSION=17
 ARG ODOO_MINOR_VERSION=0
-FROM odoo:${ODOO_MAJOR_VERSION:-17} as scripts
+FROM odoo:${ODOO_MAJOR_VERSION:-17} AS scripts
 
 # Copy and rename files individually
 COPY tools/src/addon_updater.py /usr/local/sbin/odoo-addon-updater
