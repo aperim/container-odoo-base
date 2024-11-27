@@ -114,8 +114,66 @@ modify_uid_gid() {
 # Function to ensure correct permissions on critical files and folders
 ensure_permissions() {
   log "Ensuring correct permissions on critical files and folders..."
-  chown -R odoo:odoo /var/lib/odoo /opt/odoo /etc/odoo
-  log "Permissions have been set."
+
+  # Change ownership for /var/lib/odoo and /etc/odoo as in the original script
+  chown -R odoo:odoo /var/lib/odoo /etc/odoo
+  log "Changed ownership for /var/lib/odoo and /etc/odoo."
+
+  # Define source and target directories as per the addon updater
+  local sources=(
+    "/usr/share/odoo/community"
+    "/usr/share/odoo/enterprise"
+    "/usr/share/odoo/extras"
+  )
+  local targets=(
+    "/opt/odoo/community"
+    "/opt/odoo/enterprise"
+    "/opt/odoo/extras"
+  )
+
+  # Ensure both arrays have the same length
+  if [[ "${#sources[@]}" -ne "${#targets[@]}" ]]; then
+    log "Source and target directories count mismatch."
+    exit 1
+  fi
+
+  # Iterate over each source and corresponding target
+  for (( i=0; i<${#sources[@]}; i++ )); do
+    local source="${sources[i]}"
+    local target="${targets[i]}"
+
+    if [[ -e "$target" ]]; then
+      if [[ -L "$target" ]]; then
+        # It's a symbolic link; determine its target
+        local symlink_target
+        symlink_target=$(readlink -f "$target") || {
+          log "Failed to resolve symlink for '$target'. Skipping."
+          continue
+        }
+
+        if [[ "$symlink_target" == "$source" ]]; then
+          log "Skipping permission change for symlinked path '$target' pointing to '$source'."
+        else
+          log "Changing ownership for symlinked path '$target' pointing to '$symlink_target'."
+          chown -R odoo:odoo "$target" || {
+            log "Failed to change ownership for symlinked path '$target'."
+            exit 1
+          }
+        fi
+      else
+        # It's a regular directory; change ownership
+        log "Changing ownership for directory '$target'."
+        chown -R odoo:odoo "$target" || {
+          log "Failed to change ownership for directory '$target'."
+          exit 1
+        }
+      fi
+    else
+      log "Path '$target' does not exist. Skipping."
+    fi
+  done
+
+  log "Permissions have been ensured for targeted directories."
 }
 
 # Step 1: Wait for Redis to become available
