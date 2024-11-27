@@ -163,7 +163,7 @@ wait_for_postgres() {
 acquire_init_lock() {
   log "Acquiring init lock '${INIT_LOCK}'..."
 
-  if lock-handler acquire "${INIT_LOCK}"; then
+  if lock-handler acquire "${INIT_LOCK}" 10800; then
     log "Init lock acquired."
     INIT_LOCK_HELD=true  # Lock is now held
     return 0
