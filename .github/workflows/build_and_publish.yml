@@ -260,7 +260,8 @@ jobs:
         with:
           context: .
           file: Dockerfile.c.odoo
-          platforms: linux/amd64,linux/arm64
+          # platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: |
             ${{ steps.vars.outputs.ODOO_COMMUNITY_IMAGE_TAGS }}
@@ -299,7 +300,8 @@ jobs:
         with:
           context: .
           file: Dockerfile.c.nginx
-          platforms: linux/amd64,linux/arm64,linux/ppc64le
+          platforms: linux/amd64,linux/ppc64le
+          # platforms: linux/amd64,linux/arm64,linux/ppc64le
           push: true
           tags: |
             ${{ steps.vars.outputs.NGINX_COMMUNITY_IMAGE_TAGS }}
@@ -336,7 +338,8 @@ jobs:
         with:
           context: .
           file: Dockerfile.e.odoo
-          platforms: linux/amd64,linux/arm64
+          # platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: |
             ${{ steps.vars.outputs.ODOO_ENTERPRISE_IMAGE_TAGS }}
@@ -365,7 +368,8 @@ jobs:
         with:
           context: .
           file: Dockerfile.e.nginx
-          platforms: linux/amd64,linux/arm64,linux/ppc64le
+          # platforms: linux/amd64,linux/arm64,linux/ppc64le
+          platforms: linux/amd64,linux/ppc64le
           push: true
           tags: |
             ${{ steps.vars.outputs.NGINX_ENTERPRISE_IMAGE_TAGS }}
