@@ -23,5 +23,8 @@
     ],
     "files.exclude": {
         "**/.pixi/envs": true
+    },
+    "[shellscript]": {
+        "editor.defaultFormatter": "foxundermoon.shell-format"
     }
 }
