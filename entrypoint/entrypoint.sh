@@ -29,8 +29,8 @@ readonly UPGRADE_LOCK="upgradelead"
 # Global variables
 WORKERS=0
 LISTEN_INTERFACE="0.0.0.0"
-INIT_LOCK_HELD=false  # Track whether init lock is held
-UPGRADE_LOCK_HELD=false  # Track whether upgrade lock is held
+INIT_LOCK_HELD=false    # Track whether init lock is held
+UPGRADE_LOCK_HELD=false # Track whether upgrade lock is held
 
 # Trap signals for cleanup
 trap 'cleanup' SIGINT SIGTERM
@@ -60,7 +60,7 @@ log() {
 parse_blocklist() {
   local blocklist_var="$1"
   local blocklist=()
-  IFS=', ' read -r -a blocklist <<< "$blocklist_var"
+  IFS=', ' read -r -a blocklist <<<"$blocklist_var"
   echo "${blocklist[@]}"
 }
 
@@ -116,8 +116,9 @@ ensure_permissions() {
   log "Ensuring correct permissions on critical files and folders..."
 
   # Change ownership for /var/lib/odoo and /etc/odoo as in the original script
-  chown -R odoo:odoo /var/lib/odoo /etc/odoo
-  log "Changed ownership for /var/lib/odoo and /etc/odoo."
+  # This seems to be unnecessary and has been disabled
+  # chown -R odoo:odoo /var/lib/odoo /etc/odoo
+  # log "Changed ownership for /var/lib/odoo and /etc/odoo."
 
   # Define source and target directories as per the addon updater
   local sources=(
@@ -138,7 +139,7 @@ ensure_permissions() {
   fi
 
   # Iterate over each source and corresponding target
-  for (( i=0; i<${#sources[@]}; i++ )); do
+  for ((i = 0; i < ${#sources[@]}; i++)); do
     local source="${sources[i]}"
     local target="${targets[i]}"
 
@@ -223,7 +224,7 @@ acquire_init_lock() {
 
   if lock-handler acquire "${INIT_LOCK}" 10800; then
     log "Init lock acquired."
-    INIT_LOCK_HELD=true  # Lock is now held
+    INIT_LOCK_HELD=true # Lock is now held
     return 0
   else
     log "Init lock not acquired. Another instance is handling initialization."
@@ -304,12 +305,12 @@ has_valid_addons_in_mnt() {
     for dir in /mnt/addons/*; do
       if [[ -d "$dir" && -f "$dir/__manifest__.py" ]]; then
         log "Found valid addon in /mnt/addons: $(basename "$dir")"
-        return 0  # Found at least one valid addon
+        return 0 # Found at least one valid addon
       fi
     done
   fi
   log "No valid addons found in /mnt/addons."
-  return 1  # No valid addons found
+  return 1 # No valid addons found
 }
 
 # Function to get the list of addon paths, including /mnt/addons if it contains valid addons
@@ -325,7 +326,8 @@ get_addons_paths() {
     addons_paths+=("/mnt/addons")
   fi
   # Join the addons paths by comma and echo
-  IFS=','; echo "${addons_paths[*]}"
+  IFS=','
+  echo "${addons_paths[*]}"
 }
 
 # Function to restore the Odoo instance from a backup
@@ -406,7 +408,7 @@ update_needed() {
     fi
 
     # Compare the timestamps
-    if (( existing_timestamp < build_timestamp )); then
+    if ((existing_timestamp < build_timestamp)); then
       log "Existing timestamp ($existing_timestamp) is less than build timestamp ($build_timestamp). Update is needed."
       return 0
     else
@@ -472,7 +474,7 @@ _write_timestamp_file() {
   local timestamp_file="$2"
 
   # Write the timestamp to a temporary file
-  if ! echo "$timestamp" > "$temp_file"; then
+  if ! echo "$timestamp" >"$temp_file"; then
     log "Failed to write to temporary timestamp file."
     return 1
   fi
@@ -544,13 +546,14 @@ perform_destroy() {
   # Terminate all connections to the database
   log "Terminating all connections to database '${POSTGRES_DB}'..."
   local terminate_sql
-  terminate_sql=$(cat <<EOF
+  terminate_sql=$(
+    cat <<EOF
 SELECT pg_terminate_backend(pid)
 FROM pg_stat_activity
 WHERE datname = '${POSTGRES_DB}'
   AND pid <> pg_backend_pid();
 EOF
-)
+  )
   if ! execute_psql_command "postgres" "${terminate_sql}"; then
     log "Failed to terminate connections to database '${POSTGRES_DB}'."
     release_init_lock
@@ -606,15 +609,15 @@ initialize_odoo() {
 
   # Extract unique country codes from ODOO_LANGUAGES
   local langs=()
-  IFS=',' read -ra langs <<< "$odoo_languages"  # Split ODOO_LANGUAGES by comma
+  IFS=',' read -ra langs <<<"$odoo_languages" # Split ODOO_LANGUAGES by comma
 
   local country_codes=()
   local lang
   for lang in "${langs[@]}"; do
     # Extract country code after underscore, e.g., en_US -> US
     if [[ "$lang" == *"_"* ]]; then
-      local country_code="${lang#*_}"  # Remove everything before underscore
-      local country_code_lower="${country_code,,}"  # Convert to lowercase
+      local country_code="${lang#*_}"              # Remove everything before underscore
+      local country_code_lower="${country_code,,}" # Convert to lowercase
       country_codes+=("$country_code_lower")
     fi
   done
@@ -640,7 +643,7 @@ initialize_odoo() {
     #   $@: List of addon paths to search.
     # Returns:
     #   Populates the array with addon names.
-    local -n addons=$1  # Use nameref to reference the array variable
+    local -n addons=$1 # Use nameref to reference the array variable
     shift
     local addon_paths=("$@")
     local addon_path
@@ -652,7 +655,7 @@ initialize_odoo() {
     if [[ -n "$blocklist_var" ]]; then
       # Replace commas with spaces and then split by spaces
       blocklist_var="${blocklist_var//,/ }"
-      read -r -a blocklist <<< "$blocklist_var"
+      read -r -a blocklist <<<"$blocklist_var"
     fi
 
     # Log the list of blocked domains
@@ -676,7 +679,7 @@ initialize_odoo() {
               if [[ "$addon_name" == *"l10n"* ]]; then
                 # It's a localisation addon
                 # Extract possible country codes from addon name
-                IFS='_' read -ra parts <<< "$addon_name"
+                IFS='_' read -ra parts <<<"$addon_name"
                 local addon_countries=()
                 local part
                 for part in "${parts[@]}"; do
@@ -692,7 +695,7 @@ initialize_odoo() {
                   for our_country in "${unique_country_codes[@]}"; do
                     if [[ "$addon_country" == "$our_country" ]]; then
                       include_addon=true
-                      break 2  # Break out of both loops
+                      break 2 # Break out of both loops
                     fi
                   done
                 done
@@ -718,12 +721,12 @@ initialize_odoo() {
       fi
     done
   } # End of collect_addons function
-  
+
   # Get the list of addon paths
   local addon_paths_str
   addon_paths_str="$(get_addons_paths)"
   # Split the addon paths into an array
-  IFS=',' read -ra addon_paths <<< "$addon_paths_str"
+  IFS=',' read -ra addon_paths <<<"$addon_paths_str"
 
   # Collect Odoo addons from community and enterprise directories
   local odoo_addons=()
@@ -743,7 +746,10 @@ initialize_odoo() {
   local odoo_addon_init_list=""
   if [[ ${#odoo_addons[@]} -gt 0 ]]; then
     # Combine the addons into a comma-separated string
-    odoo_addon_init_list="$(IFS=','; echo "${odoo_addons[*]}")"
+    odoo_addon_init_list="$(
+      IFS=','
+      echo "${odoo_addons[*]}"
+    )"
     log "Odoo addons to initialise: $odoo_addon_init_list"
   else
     log "No Odoo addons found to initialise."
@@ -803,7 +809,10 @@ initialize_odoo() {
   # Initialise extras addons if any
   if [[ ${#extras_addons[@]} -gt 0 ]]; then
     local extras_addon_init_list
-    extras_addon_init_list="$(IFS=','; echo "${extras_addons[*]}")"
+    extras_addon_init_list="$(
+      IFS=','
+      echo "${extras_addons[*]}"
+    )"
     log "Extras addons to initialise: $extras_addon_init_list"
 
     # Try to initialise extras addons
@@ -852,7 +861,7 @@ release_init_lock() {
   if [[ "$INIT_LOCK_HELD" == true ]]; then
     log "Releasing init lock '${INIT_LOCK}'..."
     lock-handler release "${INIT_LOCK}"
-    INIT_LOCK_HELD=false  # Lock is no longer held
+    INIT_LOCK_HELD=false # Lock is no longer held
   else
     log "Init lock '${INIT_LOCK}' not held, no need to release."
   fi
@@ -1145,13 +1154,13 @@ main() {
   # Handle custom commands
   if [[ $# -gt 0 ]]; then
     case "$1" in
-      odoo|odoo.py|--*)
-        # Proceed with Odoo initialization
-        ;;
-      *)
-        # Execute custom command
-        handle_custom_command "$@"
-        ;;
+    odoo | odoo.py | --*)
+      # Proceed with Odoo initialization
+      ;;
+    *)
+      # Execute custom command
+      handle_custom_command "$@"
+      ;;
     esac
   fi
 
