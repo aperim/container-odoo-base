@@ -18,7 +18,7 @@ import os
 import signal
 import sys
 import unittest
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 from unittest.mock import MagicMock, mock_open, patch
 
 # Import the module to test
@@ -34,10 +34,13 @@ class TestOdooConfig(unittest.TestCase):
         # Mock the CONFIG_FILE_PATH
         self.config_file_path = '/tmp/odoo.conf'
         odoo_config.CONFIG_FILE_PATH = self.config_file_path
+        odoo_config.LOCK_FILE_PATH = self.config_file_path + '.lock'
 
         # Ensure the config file does not exist before each test
         if os.path.exists(self.config_file_path):
             os.remove(self.config_file_path)
+        if os.path.exists(self.config_file_path + '.lock'):
+            os.remove(self.config_file_path + '.lock')
 
         # Mock environment variables
         self.env_patcher = patch.dict('os.environ', {
@@ -55,54 +58,76 @@ class TestOdooConfig(unittest.TestCase):
         if os.path.exists(self.config_file_path):
             os.remove(self.config_file_path)
 
-    @patch('os.path.exists')
+    @patch('fcntl.flock')
+    @patch('os.makedirs')
     @patch('builtins.open', new_callable=mock_open, read_data='')
-    def test_ensure_config_file_exists_creates_file(self, mock_file: MagicMock, mock_exists: MagicMock) -> None:
+    def test_ensure_config_file_exists_creates_file(self, mock_file: MagicMock, mock_makedirs: MagicMock, mock_flock: MagicMock) -> None:
         """Test that ensure_config_file_exists creates the config file with [options] section when it does not exist."""
-        mock_exists.return_value = False
         odoo_config.ensure_config_file_exists()
-        mock_file.assert_called_with(self.config_file_path, 'w', encoding='utf-8')
+        mock_file.assert_any_call(self.config_file_path + '.lock', 'a', encoding='utf-8')
+        mock_file.assert_any_call(self.config_file_path, 'a+', encoding='utf-8')
         mock_file().write.assert_called_once_with('[options]\n')
+        self.assertEqual(mock_flock.call_count, 2)
         print("Test ensure_config_file_exists_creates_file passed.")
 
-    @patch('os.path.exists')
+    @patch('fcntl.flock')
+    @patch('os.makedirs')
     @patch('builtins.open', new_callable=mock_open, read_data='[other_section]\nkey=value\n')
-    def test_ensure_config_file_exists_adds_options_section(self, mock_file: MagicMock, mock_exists: MagicMock) -> None:
+    def test_ensure_config_file_exists_adds_options_section(self, mock_file: MagicMock, mock_makedirs: MagicMock, mock_flock: MagicMock) -> None:
         """Test that ensure_config_file_exists adds [options] section if missing."""
-        mock_exists.return_value = True
         odoo_config.ensure_config_file_exists()
-        mock_file.assert_called_with(self.config_file_path, 'r+', encoding='utf-8')
+        mock_file.assert_any_call(self.config_file_path + '.lock', 'a', encoding='utf-8')
+        mock_file.assert_any_call(self.config_file_path, 'a+', encoding='utf-8')
         handle = mock_file()
-        handle.seek.assert_called_with(0, 0)
+        handle.seek.assert_any_call(0)
         handle.write.assert_called_once_with('[options]\n[other_section]\nkey=value\n')
+        self.assertEqual(mock_flock.call_count, 2)
         print("Test ensure_config_file_exists_adds_options_section passed.")
 
-    @patch('os.path.exists')
+    @patch('fcntl.flock')
+    @patch('os.makedirs')
     @patch('builtins.open', new_callable=mock_open, read_data='[options]\nkey=value\n')
-    def test_ensure_config_file_exists_no_changes(self, mock_file: MagicMock, mock_exists: MagicMock) -> None:
+    def test_ensure_config_file_exists_no_changes(self, mock_file: MagicMock, mock_makedirs: MagicMock, mock_flock: MagicMock) -> None:
         """Test that ensure_config_file_exists makes no changes if [options] exists."""
-        mock_exists.return_value = True
         odoo_config.ensure_config_file_exists()
-        mock_file.assert_called_with(self.config_file_path, 'r+', encoding='utf-8')
+        mock_file.assert_any_call(self.config_file_path + '.lock', 'a', encoding='utf-8')
+        mock_file.assert_any_call(self.config_file_path, 'a+', encoding='utf-8')
         handle = mock_file()
         handle.write.assert_not_called()
+        self.assertEqual(mock_flock.call_count, 2)
         print("Test ensure_config_file_exists_no_changes passed.")
 
+    @patch('fcntl.flock')
     @patch('builtins.open', new_callable=mock_open, read_data='[options]\nkey=value\n')
-    def test_read_config_lines(self, mock_file: MagicMock) -> None:
+    def test_read_config_lines(self, mock_file: MagicMock, mock_flock: MagicMock) -> None:
         """Test reading config lines."""
         lines = odoo_config.read_config_lines()
         self.assertEqual(lines, ['[options]\n', 'key=value\n'])
-        mock_file.assert_called_with(self.config_file_path, 'r', encoding='utf-8')
+        mock_file.assert_any_call(self.config_file_path + '.lock', 'a', encoding='utf-8')
+        mock_file.assert_any_call(self.config_file_path, 'r', encoding='utf-8')
+        self.assertEqual(mock_flock.call_count, 2)
         print("Test read_config_lines passed.")
 
+    @patch('os.replace')
+    @patch('os.fdopen')
+    @patch('tempfile.mkstemp')
+    @patch('fcntl.flock')
+    @patch('os.makedirs')
     @patch('builtins.open', new_callable=mock_open)
-    def test_write_config_lines(self, mock_file: MagicMock) -> None:
-        """Test writing config lines."""
+    def test_write_config_lines(self, mock_open_file: MagicMock, mock_makedirs: MagicMock,
+                               mock_flock: MagicMock, mock_mkstemp: MagicMock,
+                               mock_fdopen: MagicMock, mock_replace: MagicMock) -> None:
+        """Test writing config lines atomically."""
         lines = ['[options]\n', 'key=value\n']
+        mock_mkstemp.return_value = (3, '/tmp/tmpfile')
+        mock_tmp = MagicMock()
+        mock_fdopen.return_value.__enter__.return_value = mock_tmp
         odoo_config.write_config_lines(lines)
-        mock_file.assert_called_with(self.config_file_path, 'w', encoding='utf-8')
-        mock_file().writelines.assert_called_with(lines)
+        mock_mkstemp.assert_called_once()
+        mock_tmp.writelines.assert_called_with(lines)
+        mock_replace.assert_called_with('/tmp/tmpfile', self.config_file_path)
+        mock_open_file.assert_any_call(self.config_file_path + '.lock', 'a', encoding='utf-8')
+        self.assertGreaterEqual(mock_flock.call_count, 2)
         print("Test write_config_lines passed.")
 
     def test_remove_commented_option(self) -> None:
