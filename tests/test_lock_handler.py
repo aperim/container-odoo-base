@@ -18,8 +18,8 @@ import signal
 import ssl
 import sys
 import unittest
-from types import FrameType
-from typing import Optional
+
+sys.path.append(os.path.abspath('.'))
 from unittest.mock import MagicMock, patch
 
 import redis  # Import the redis library to access exceptions

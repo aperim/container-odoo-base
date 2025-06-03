@@ -1,9 +1,10 @@
 import unittest
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch, MagicMock
 import sys
 import os
 import signal
-from types import FrameType
+
+sys.path.append(os.path.abspath('.'))
 
 # Import functions from addon_updater module
 from tools.src.addon_updater import (
@@ -12,10 +13,8 @@ from tools.src.addon_updater import (
     copy_addon,
     dirs_are_same,
     compare_and_update_addons,
-    clean_up,
     signal_handler,
     main,
-    PATHS
 )
 
 
