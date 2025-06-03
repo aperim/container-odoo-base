@@ -32,13 +32,14 @@ LISTEN_INTERFACE="0.0.0.0"
 INIT_LOCK_HELD=false    # Track whether init lock is held
 UPGRADE_LOCK_HELD=false # Track whether upgrade lock is held
 
-# Trap signals for cleanup
-trap 'cleanup' SIGINT SIGTERM
+# Trap signals and errors for cleanup
+trap 'cleanup 1' SIGINT SIGTERM
+trap 'cleanup $?' ERR EXIT
 
 # Function to perform cleanup tasks before exiting
 cleanup() {
-  # Function to perform cleanup tasks before exiting
-  log "Received termination signal, cleaning up..."
+  local exit_code="${1:-1}"
+  log "Cleaning up (exit code: $exit_code)..."
   if [[ "$INIT_LOCK_HELD" == true ]]; then
     log "Releasing init lock due to termination..."
     release_init_lock
@@ -47,7 +48,7 @@ cleanup() {
     log "Releasing upgrade lock due to termination..."
     release_upgrade_lock
   fi
-  exit 1
+  exit "$exit_code"
 }
 
 # Function to log messages with timestamps to STDERR
