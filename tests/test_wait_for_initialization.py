@@ -3,6 +3,9 @@ from unittest.mock import patch, MagicMock
 import sys
 import signal
 
+import os
+sys.path.append(os.path.abspath('.'))
+
 from tools.src.wait_for_initialization import (
     wait_for_initialization,
     clean_up,

@@ -58,10 +58,11 @@ class TestOdooConfig(unittest.TestCase):
         if os.path.exists(self.config_file_path):
             os.remove(self.config_file_path)
 
+    @patch('os.fsync')
     @patch('fcntl.flock')
     @patch('os.makedirs')
     @patch('builtins.open', new_callable=mock_open, read_data='')
-    def test_ensure_config_file_exists_creates_file(self, mock_file: MagicMock, mock_makedirs: MagicMock, mock_flock: MagicMock) -> None:
+    def test_ensure_config_file_exists_creates_file(self, mock_file: MagicMock, mock_makedirs: MagicMock, mock_flock: MagicMock, mock_fsync: MagicMock) -> None:
         """Test that ensure_config_file_exists creates the config file with [options] section when it does not exist."""
         odoo_config.ensure_config_file_exists()
         mock_file.assert_any_call(self.config_file_path + '.lock', 'a', encoding='utf-8')
@@ -70,10 +71,11 @@ class TestOdooConfig(unittest.TestCase):
         self.assertEqual(mock_flock.call_count, 2)
         print("Test ensure_config_file_exists_creates_file passed.")
 
+    @patch('os.fsync')
     @patch('fcntl.flock')
     @patch('os.makedirs')
     @patch('builtins.open', new_callable=mock_open, read_data='[other_section]\nkey=value\n')
-    def test_ensure_config_file_exists_adds_options_section(self, mock_file: MagicMock, mock_makedirs: MagicMock, mock_flock: MagicMock) -> None:
+    def test_ensure_config_file_exists_adds_options_section(self, mock_file: MagicMock, mock_makedirs: MagicMock, mock_flock: MagicMock, mock_fsync: MagicMock) -> None:
         """Test that ensure_config_file_exists adds [options] section if missing."""
         odoo_config.ensure_config_file_exists()
         mock_file.assert_any_call(self.config_file_path + '.lock', 'a', encoding='utf-8')
@@ -84,10 +86,11 @@ class TestOdooConfig(unittest.TestCase):
         self.assertEqual(mock_flock.call_count, 2)
         print("Test ensure_config_file_exists_adds_options_section passed.")
 
+    @patch('os.fsync')
     @patch('fcntl.flock')
     @patch('os.makedirs')
     @patch('builtins.open', new_callable=mock_open, read_data='[options]\nkey=value\n')
-    def test_ensure_config_file_exists_no_changes(self, mock_file: MagicMock, mock_makedirs: MagicMock, mock_flock: MagicMock) -> None:
+    def test_ensure_config_file_exists_no_changes(self, mock_file: MagicMock, mock_makedirs: MagicMock, mock_flock: MagicMock, mock_fsync: MagicMock) -> None:
         """Test that ensure_config_file_exists makes no changes if [options] exists."""
         odoo_config.ensure_config_file_exists()
         mock_file.assert_any_call(self.config_file_path + '.lock', 'a', encoding='utf-8')
@@ -111,11 +114,12 @@ class TestOdooConfig(unittest.TestCase):
     @patch('os.replace')
     @patch('os.fdopen')
     @patch('tempfile.mkstemp')
+    @patch('os.fsync')
     @patch('fcntl.flock')
     @patch('os.makedirs')
     @patch('builtins.open', new_callable=mock_open)
     def test_write_config_lines(self, mock_open_file: MagicMock, mock_makedirs: MagicMock,
-                               mock_flock: MagicMock, mock_mkstemp: MagicMock,
+                               mock_flock: MagicMock, mock_fsync: MagicMock, mock_mkstemp: MagicMock,
                                mock_fdopen: MagicMock, mock_replace: MagicMock) -> None:
         """Test writing config lines atomically."""
         lines = ['[options]\n', 'key=value\n']
