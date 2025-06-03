@@ -1,6 +1,9 @@
 import unittest
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch, MagicMock
 import os
+
+import sys
+sys.path.append(os.path.abspath('.'))
 
 from tools.src.replace_odoo_addons_path import replace_odoo_addons_path
 

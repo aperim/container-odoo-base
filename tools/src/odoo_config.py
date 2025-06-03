@@ -22,12 +22,15 @@ import os
 import re
 import signal
 import sys
+import tempfile
+import fcntl
 from types import FrameType
 from typing import Dict, List, Optional
 
 
 # Constants
 CONFIG_FILE_PATH: str = '/etc/odoo/odoo.conf'
+LOCK_FILE_PATH: str = CONFIG_FILE_PATH + '.lock'
 
 # Default configuration values
 DEFAULTS: Dict[str, str] = {
@@ -63,38 +66,42 @@ def signal_handler(signum: int, frame: Optional[FrameType]) -> None:
 
 
 def ensure_config_file_exists() -> None:
-    """Ensure the configuration file exists and has a [options] section."""
+    """Ensure the configuration file exists and contains an [options] section."""
+    dir_name = os.path.dirname(CONFIG_FILE_PATH)
+    os.makedirs(dir_name, exist_ok=True)
     try:
-        if not os.path.exists(CONFIG_FILE_PATH):
-            # Create the configuration file with [options] section
-            with open(CONFIG_FILE_PATH, 'w', encoding='utf-8') as configfile:
-                configfile.write('[options]\n')
-                print("Config file created with [options] section.", file=sys.stderr)
-        else:
-            # Ensure the [options] section exists in the existing file
-            with open(CONFIG_FILE_PATH, 'r+', encoding='utf-8') as configfile:
+        with open(LOCK_FILE_PATH, 'a', encoding='utf-8') as lockfile:
+            fcntl.flock(lockfile.fileno(), fcntl.LOCK_EX)
+            fd: int = os.open(CONFIG_FILE_PATH, os.O_RDWR | os.O_CREAT)
+            with os.fdopen(fd, 'r+', encoding='utf-8') as configfile:
+                configfile.seek(0)
                 content: str = configfile.read()
                 if '[options]' not in content:
-                    configfile.seek(0, 0)
+                    configfile.seek(0)
                     configfile.write('[options]\n' + content)
-                    print("Added [options] section to existing config file.", file=sys.stderr)
+                    configfile.truncate()
+                    configfile.flush()
+                    os.fsync(configfile.fileno())
+                    print(
+                        "Config file created with [options] section." if not content else
+                        "Added [options] section to existing config file.",
+                        file=sys.stderr,
+                    )
+            fcntl.flock(lockfile.fileno(), fcntl.LOCK_UN)
     except OSError as e:
         print(f"Error accessing config file: {e}", file=sys.stderr)
         sys.exit(1)
 
 
 def read_config_lines() -> List[str]:
-    """Read the configuration file and return its content as a list of lines.
-
-    Returns:
-        List[str]: The list of lines from the configuration file.
-
-    Raises:
-        SystemExit: If the configuration file cannot be read.
-    """
+    """Read the configuration file and return its content as a list of lines."""
     try:
-        with open(CONFIG_FILE_PATH, 'r', encoding='utf-8') as configfile:
-            return configfile.readlines()
+        with open(LOCK_FILE_PATH, 'a', encoding='utf-8') as lockfile:
+            fcntl.flock(lockfile.fileno(), fcntl.LOCK_SH)
+            with open(CONFIG_FILE_PATH, 'r', encoding='utf-8') as configfile:
+                lines = configfile.readlines()
+            fcntl.flock(lockfile.fileno(), fcntl.LOCK_UN)
+            return lines
     except OSError as e:
         print(f"Error reading config file: {e}", file=sys.stderr)
         sys.exit(1)
@@ -109,12 +116,34 @@ def write_config_lines(lines: List[str]) -> None:
     Raises:
         SystemExit: If the configuration file cannot be written.
     """
+    dir_name = os.path.dirname(CONFIG_FILE_PATH)
+    os.makedirs(dir_name, exist_ok=True)
+    temp_fd, temp_path = tempfile.mkstemp(dir=dir_name)
     try:
-        with open(CONFIG_FILE_PATH, 'w', encoding='utf-8') as configfile:
-            configfile.writelines(lines)
+        with os.fdopen(temp_fd, 'w', encoding='utf-8') as tmpfile:
+            tmpfile.writelines(lines)
+            tmpfile.flush()
+            os.fsync(tmpfile.fileno())
+        with open(LOCK_FILE_PATH, 'a', encoding='utf-8') as lockfile:
+            fcntl.flock(lockfile.fileno(), fcntl.LOCK_EX)
+            os.replace(temp_path, CONFIG_FILE_PATH)
+            try:
+                dir_fd = os.open(dir_name, os.O_DIRECTORY)
+                os.fsync(dir_fd)
+            finally:
+                try:
+                    os.close(dir_fd)
+                except Exception:
+                    pass
+            fcntl.flock(lockfile.fileno(), fcntl.LOCK_UN)
     except OSError as e:
         print(f"Error writing to config file: {e}", file=sys.stderr)
         sys.exit(1)
+    finally:
+        try:
+            os.remove(temp_path)
+        except FileNotFoundError:
+            pass
 
 
 def remove_commented_option(lines: List[str], key: str) -> None:
