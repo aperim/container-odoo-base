@@ -103,7 +103,7 @@ This repository includes various scripts that facilitate container management an
   - **Addon Management:** Ensures that shipped Odoo addons are present and up to date across community, enterprise, and extras.
   - **Collision Prevention:** Uses file locking mechanisms to prevent race conditions during initialization.
   - **Database Initialization:** Handles the creation and migration of the Odoo database.
-  - **Signal Handling:** Properly handles system signals for graceful shutdown and cleanup.
+  - **Signal Handling:** Properly handles system signals for graceful shutdown and cleanup, ensuring locks are released even if initialization or upgrade fails.
 
 ### Utility Scripts
 
