@@ -22,6 +22,8 @@ import os
 import re
 import signal
 import sys
+import tempfile
+import fcntl
 from types import FrameType
 from typing import Dict, List, Optional
 
@@ -66,18 +68,20 @@ def ensure_config_file_exists() -> None:
     """Ensure the configuration file exists and has a [options] section."""
     try:
         if not os.path.exists(CONFIG_FILE_PATH):
-            # Create the configuration file with [options] section
             with open(CONFIG_FILE_PATH, 'w', encoding='utf-8') as configfile:
+                fcntl.flock(configfile.fileno(), fcntl.LOCK_EX)
                 configfile.write('[options]\n')
+                fcntl.flock(configfile.fileno(), fcntl.LOCK_UN)
                 print("Config file created with [options] section.", file=sys.stderr)
         else:
-            # Ensure the [options] section exists in the existing file
             with open(CONFIG_FILE_PATH, 'r+', encoding='utf-8') as configfile:
+                fcntl.flock(configfile.fileno(), fcntl.LOCK_EX)
                 content: str = configfile.read()
                 if '[options]' not in content:
                     configfile.seek(0, 0)
                     configfile.write('[options]\n' + content)
                     print("Added [options] section to existing config file.", file=sys.stderr)
+                fcntl.flock(configfile.fileno(), fcntl.LOCK_UN)
     except OSError as e:
         print(f"Error accessing config file: {e}", file=sys.stderr)
         sys.exit(1)
@@ -94,7 +98,10 @@ def read_config_lines() -> List[str]:
     """
     try:
         with open(CONFIG_FILE_PATH, 'r', encoding='utf-8') as configfile:
-            return configfile.readlines()
+            fcntl.flock(configfile.fileno(), fcntl.LOCK_SH)
+            lines = configfile.readlines()
+            fcntl.flock(configfile.fileno(), fcntl.LOCK_UN)
+            return lines
     except OSError as e:
         print(f"Error reading config file: {e}", file=sys.stderr)
         sys.exit(1)
@@ -109,12 +116,25 @@ def write_config_lines(lines: List[str]) -> None:
     Raises:
         SystemExit: If the configuration file cannot be written.
     """
+    dir_name = os.path.dirname(CONFIG_FILE_PATH)
+    temp_fd, temp_path = tempfile.mkstemp(dir=dir_name)
     try:
-        with open(CONFIG_FILE_PATH, 'w', encoding='utf-8') as configfile:
-            configfile.writelines(lines)
+        with os.fdopen(temp_fd, 'w', encoding='utf-8') as tmpfile:
+            tmpfile.writelines(lines)
+            tmpfile.flush()
+            os.fsync(tmpfile.fileno())
+        with open(CONFIG_FILE_PATH, 'a', encoding='utf-8') as lockfile:
+            fcntl.flock(lockfile.fileno(), fcntl.LOCK_EX)
+            os.replace(temp_path, CONFIG_FILE_PATH)
+            fcntl.flock(lockfile.fileno(), fcntl.LOCK_UN)
     except OSError as e:
         print(f"Error writing to config file: {e}", file=sys.stderr)
         sys.exit(1)
+    finally:
+        try:
+            os.remove(temp_path)
+        except FileNotFoundError:
+            pass
 
 
 def remove_commented_option(lines: List[str], key: str) -> None:
