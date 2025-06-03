@@ -72,7 +72,8 @@ def ensure_config_file_exists() -> None:
     try:
         with open(LOCK_FILE_PATH, 'a', encoding='utf-8') as lockfile:
             fcntl.flock(lockfile.fileno(), fcntl.LOCK_EX)
-            with open(CONFIG_FILE_PATH, 'a+', encoding='utf-8') as configfile:
+            fd: int = os.open(CONFIG_FILE_PATH, os.O_RDWR | os.O_CREAT)
+            with os.fdopen(fd, 'r+', encoding='utf-8') as configfile:
                 configfile.seek(0)
                 content: str = configfile.read()
                 if '[options]' not in content:
@@ -126,6 +127,14 @@ def write_config_lines(lines: List[str]) -> None:
         with open(LOCK_FILE_PATH, 'a', encoding='utf-8') as lockfile:
             fcntl.flock(lockfile.fileno(), fcntl.LOCK_EX)
             os.replace(temp_path, CONFIG_FILE_PATH)
+            try:
+                dir_fd = os.open(dir_name, os.O_DIRECTORY)
+                os.fsync(dir_fd)
+            finally:
+                try:
+                    os.close(dir_fd)
+                except Exception:
+                    pass
             fcntl.flock(lockfile.fileno(), fcntl.LOCK_UN)
     except OSError as e:
         print(f"Error writing to config file: {e}", file=sys.stderr)
