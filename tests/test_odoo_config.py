@@ -107,15 +107,17 @@ class TestOdooConfig(unittest.TestCase):
     @patch('os.replace')
     @patch('os.fdopen')
     @patch('tempfile.mkstemp')
+    @patch('os.fsync')
     @patch('fcntl.flock')
     @patch('builtins.open', new_callable=mock_open)
     def test_write_config_lines(self, mock_open_file: MagicMock, mock_flock: MagicMock,
-                               mock_mkstemp: MagicMock, mock_fdopen: MagicMock,
-                               mock_replace: MagicMock) -> None:
+                               mock_fsync: MagicMock, mock_mkstemp: MagicMock,
+                               mock_fdopen: MagicMock, mock_replace: MagicMock) -> None:
         """Test writing config lines atomically."""
         lines = ['[options]\n', 'key=value\n']
         mock_mkstemp.return_value = (3, '/tmp/tmpfile')
         mock_tmp = MagicMock()
+        mock_tmp.fileno.return_value = 3
         mock_fdopen.return_value.__enter__.return_value = mock_tmp
         odoo_config.write_config_lines(lines)
         mock_mkstemp.assert_called_once()
