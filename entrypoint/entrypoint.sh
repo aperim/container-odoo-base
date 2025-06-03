@@ -32,13 +32,14 @@ LISTEN_INTERFACE="0.0.0.0"
 INIT_LOCK_HELD=false    # Track whether init lock is held
 UPGRADE_LOCK_HELD=false # Track whether upgrade lock is held
 
-# Trap signals for cleanup
-trap 'cleanup' SIGINT SIGTERM
+# Trap signals and errors for cleanup
+trap 'cleanup 1' SIGINT SIGTERM
+trap 'cleanup $?' ERR EXIT
 
 # Function to perform cleanup tasks before exiting
 cleanup() {
-  # Function to perform cleanup tasks before exiting
-  log "Received termination signal, cleaning up..."
+  local exit_code="${1:-1}"
+  log "Cleaning up (exit code: $exit_code)..."
   if [[ "$INIT_LOCK_HELD" == true ]]; then
     log "Releasing init lock due to termination..."
     release_init_lock
@@ -47,7 +48,7 @@ cleanup() {
     log "Releasing upgrade lock due to termination..."
     release_upgrade_lock
   fi
-  exit 1
+  exit "$exit_code"
 }
 
 # Function to log messages with timestamps to STDERR
@@ -443,6 +444,8 @@ update_timestamp_file() {
   exec 300>"$lock_file"
   if ! flock -n 300; then
     log "flock not supported or lock acquisition failed. Falling back to directory-based locking."
+    exec 300>&-
+    rm -f "$lock_file"
     use_flock=false
   fi
 
@@ -451,6 +454,8 @@ update_timestamp_file() {
     _write_timestamp_file "$temp_file" "$timestamp_file"
     # Release the lock
     flock -u 300
+    exec 300>&-
+    rm -f "$lock_file"
   else
     # Fallback to directory-based locking using mkdir
     if mkdir "$lock_dir" 2>/dev/null; then
