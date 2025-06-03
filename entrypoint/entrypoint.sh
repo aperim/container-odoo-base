@@ -443,6 +443,8 @@ update_timestamp_file() {
   exec 300>"$lock_file"
   if ! flock -n 300; then
     log "flock not supported or lock acquisition failed. Falling back to directory-based locking."
+    exec 300>&-
+    rm -f "$lock_file"
     use_flock=false
   fi
 
@@ -451,6 +453,8 @@ update_timestamp_file() {
     _write_timestamp_file "$temp_file" "$timestamp_file"
     # Release the lock
     flock -u 300
+    exec 300>&-
+    rm -f "$lock_file"
   else
     # Fallback to directory-based locking using mkdir
     if mkdir "$lock_dir" 2>/dev/null; then
