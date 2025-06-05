@@ -1185,6 +1185,12 @@ main() {
     }
   fi
 
+  # Ensure odoo.conf exists with sane defaults after initialization or wait
+  odoo-config --defaults || {
+    log "Failed to ensure Odoo configuration defaults."
+    exit 1
+  }
+
   check_scaffolded_semaphore
   upgrade_odoo
   set_admin_password
