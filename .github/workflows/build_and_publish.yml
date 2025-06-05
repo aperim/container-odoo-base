@@ -81,14 +81,23 @@ jobs:
           ODOO_VERSION="${{ matrix.version_major }}.${{ matrix.version_minor }}"
           ODOO_VERSION_PATTERN='^[0-9]+\.[0-9]+'
 
+          sanitize_name() {
+            local val="$1"
+            val="${val,,}"
+            val="${val//[\ \/]/-}"
+            val=$(echo "$val" | sed -E 's/[^a-z0-9._-]+/-/g')
+            val=$(echo "$val" | sed -E 's/-+/-/g; s/^[.-]+//; s/[.-]+$//')
+            echo "$val"
+          }
+
           echo "Determining version and tags..."
           TAG_LIST=()
 
           if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
             echo "Event is a release"
-            RELEASE_VERSION="${{ github.event.release.tag_name }}"
-            # Extract semver components from RELEASE_VERSION
-            IFS='.' read -ra VER_COMPONENTS <<< "$RELEASE_VERSION"
+            RELEASE_VERSION_RAW="${{ github.event.release.tag_name }}"
+            SANITIZED_RELEASE=$(echo "${RELEASE_VERSION_RAW#v}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^0-9.]+/./g')
+            IFS='.' read -ra VER_COMPONENTS <<< "$SANITIZED_RELEASE"
             REL_MAJOR="${VER_COMPONENTS[0]}"
             REL_MINOR="${VER_COMPONENTS[1]}"
             REL_PATCH="${VER_COMPONENTS[2]}"
@@ -112,10 +121,12 @@ jobs:
             fi
 
             VERSION="${REL_MAJOR}.${REL_MINOR}.${REL_PATCH}"
+            VERSION=$(sanitize_name "$VERSION")
 
           elif [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
             echo "On main branch"
             VERSION="edge"
+            VERSION=$(sanitize_name "$VERSION")
             TAG_LIST+=("${ODOO_VERSION}-edge")
 
           elif [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
@@ -127,13 +138,16 @@ jobs:
               BRANCH_SUFFIX="${BASH_REMATCH[2]}"
               if [[ "${BRANCH_ODOO_VERSION}" == "${ODOO_VERSION}" ]]; then
                 VERSION="${BRANCH_SUFFIX}"
+                VERSION=$(sanitize_name "$VERSION")
                 TAG_LIST+=("${ODOO_VERSION}-${VERSION}")
               else
                 VERSION="${PR_BRANCH}"
+                VERSION=$(sanitize_name "$VERSION")
                 TAG_LIST+=("${VERSION}")
               fi
             else
               VERSION="${PR_BRANCH}"
+              VERSION=$(sanitize_name "$VERSION")
               TAG_LIST+=("${ODOO_VERSION}-${VERSION}")
             fi
 
@@ -146,26 +160,33 @@ jobs:
               BRANCH_SUFFIX="${BASH_REMATCH[2]}"
               if [[ "${BRANCH_ODOO_VERSION}" == "${ODOO_VERSION}" ]]; then
                 VERSION="${BRANCH_SUFFIX}"
+                VERSION=$(sanitize_name "$VERSION")
                 TAG_LIST+=("${ODOO_VERSION}-${VERSION}")
               else
                 VERSION="${BRANCH_NAME}"
+                VERSION=$(sanitize_name "$VERSION")
                 TAG_LIST+=("${VERSION}")
               fi
             else
               VERSION="${BRANCH_NAME}"
+              VERSION=$(sanitize_name "$VERSION")
               TAG_LIST+=("${ODOO_VERSION}-${VERSION}")
             fi
 
           else
             echo "Event not matched, defaulting to 'dev'"
             VERSION="dev"
+            VERSION=$(sanitize_name "$VERSION")
             TAG_LIST+=("${ODOO_VERSION}-dev")
           fi
 
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
 
-          # Remove duplicates from TAG_LIST
+          # Remove duplicates and sanitize TAG_LIST entries
           TAG_LIST=($(printf "%s\n" "${TAG_LIST[@]}" | sort -u))
+          for i in "${!TAG_LIST[@]}"; do
+            TAG_LIST[$i]=$(sanitize_name "${TAG_LIST[$i]}")
+          done
 
           ODOO_IMAGE_NAME="ghcr.io/${{ github.repository_owner }}/odoo-base"
           NGINX_IMAGE_NAME="ghcr.io/${{ github.repository_owner }}/odoo-nginx-base"
