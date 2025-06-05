@@ -81,6 +81,7 @@ def ensure_config_file_exists() -> None:
                     os.fsync(cfg.fileno())
                     _log("Config file created with [options] section." if not content else
                          "Added [options] section to existing config file.")
+            os.chmod(CONFIG_FILE_PATH, 0o644)
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
     except OSError as exc:
         _log(f"Error accessing config file: {exc}")
@@ -125,6 +126,7 @@ def write_config_lines(lines: List[str]) -> None:
                     os.close(dir_fd)
                 except Exception:
                     pass
+            os.chmod(CONFIG_FILE_PATH, 0o644)
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
     except OSError as exc:
         _log(f"Error writing to config file: {exc}")
@@ -353,6 +355,22 @@ def show_config_file() -> None:
         sys.exit(1)
 
 
+def report_config_file_status() -> None:
+    """Report whether the config file exists and its size."""
+
+    if not os.path.isfile(CONFIG_FILE_PATH):
+        _log(f"Error: Config file '{CONFIG_FILE_PATH}' does not exist.")
+        sys.exit(1)
+        return
+    try:
+        size = os.path.getsize(CONFIG_FILE_PATH)
+    except OSError as exc:
+        _log(f"Error getting size of config file: {exc}")
+        sys.exit(1)
+        return
+    _log(f"Config file '{CONFIG_FILE_PATH}' exists ({size} bytes).")
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -390,6 +408,8 @@ def main() -> None:
         set_redis_configuration()
     else:
         show_config_file()
+
+    report_config_file_status()
 
 
 if __name__ == "__main__":

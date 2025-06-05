@@ -64,7 +64,8 @@ class TestOdooConfig(unittest.TestCase):
     @patch('os.fdopen')
     @patch('os.open')
     @patch('builtins.open', new_callable=mock_open)
-    def test_ensure_config_file_exists_creates_file(self, mock_open_file: MagicMock, mock_os_open: MagicMock, mock_fdopen: MagicMock, mock_makedirs: MagicMock, mock_flock: MagicMock, mock_fsync: MagicMock) -> None:
+    @patch('os.chmod')
+    def test_ensure_config_file_exists_creates_file(self, mock_chmod: MagicMock, mock_open_file: MagicMock, mock_os_open: MagicMock, mock_fdopen: MagicMock, mock_makedirs: MagicMock, mock_flock: MagicMock, mock_fsync: MagicMock) -> None:
         """Test that ensure_config_file_exists creates the config file with [options] section when it does not exist."""
         mock_os_open.return_value = 3
         tmp_handle = MagicMock()
@@ -86,7 +87,8 @@ class TestOdooConfig(unittest.TestCase):
     @patch('os.fdopen')
     @patch('os.open')
     @patch('builtins.open', new_callable=mock_open)
-    def test_ensure_config_file_exists_adds_options_section(self, mock_open_file: MagicMock, mock_os_open: MagicMock, mock_fdopen: MagicMock, mock_makedirs: MagicMock, mock_flock: MagicMock, mock_fsync: MagicMock) -> None:
+    @patch('os.chmod')
+    def test_ensure_config_file_exists_adds_options_section(self, mock_chmod: MagicMock, mock_open_file: MagicMock, mock_os_open: MagicMock, mock_fdopen: MagicMock, mock_makedirs: MagicMock, mock_flock: MagicMock, mock_fsync: MagicMock) -> None:
         """Test that ensure_config_file_exists adds [options] section if missing."""
         mock_os_open.return_value = 3
         tmp_handle = MagicMock()
@@ -109,7 +111,8 @@ class TestOdooConfig(unittest.TestCase):
     @patch('os.fdopen')
     @patch('os.open')
     @patch('builtins.open', new_callable=mock_open)
-    def test_ensure_config_file_exists_no_changes(self, mock_open_file: MagicMock, mock_os_open: MagicMock, mock_fdopen: MagicMock, mock_makedirs: MagicMock, mock_flock: MagicMock, mock_fsync: MagicMock) -> None:
+    @patch('os.chmod')
+    def test_ensure_config_file_exists_no_changes(self, mock_chmod: MagicMock, mock_open_file: MagicMock, mock_os_open: MagicMock, mock_fdopen: MagicMock, mock_makedirs: MagicMock, mock_flock: MagicMock, mock_fsync: MagicMock) -> None:
         """Test that ensure_config_file_exists makes no changes if [options] exists."""
         mock_os_open.return_value = 3
         tmp_handle = MagicMock()
@@ -145,7 +148,8 @@ class TestOdooConfig(unittest.TestCase):
     @patch('fcntl.flock')
     @patch('os.makedirs')
     @patch('builtins.open', new_callable=mock_open)
-    def test_write_config_lines(self, mock_open_file: MagicMock, mock_makedirs: MagicMock,
+    @patch('os.chmod')
+    def test_write_config_lines(self, mock_chmod: MagicMock, mock_open_file: MagicMock, mock_makedirs: MagicMock,
                                mock_flock: MagicMock, mock_fsync: MagicMock, mock_mkstemp: MagicMock,
                                mock_fdopen: MagicMock, mock_os_open: MagicMock, mock_close: MagicMock,
                                mock_replace: MagicMock) -> None:
@@ -288,7 +292,8 @@ class TestOdooConfig(unittest.TestCase):
 
     @patch('os.getenv', return_value='master_pass')
     @patch('odoo_config.set_admin_password')
-    def test_main_set_admin_password_from_env(self, mock_set_admin_password: MagicMock, mock_getenv: MagicMock) -> None:
+    @patch('odoo_config.report_config_file_status')
+    def test_main_set_admin_password_from_env(self, mock_report: MagicMock, mock_set_admin_password: MagicMock, mock_getenv: MagicMock) -> None:
         """Test setting admin password from environment variable."""
         testargs = ['odoo_config.py', '--set-admin-password']
         with patch.object(sys, 'argv', testargs):
@@ -306,7 +311,8 @@ class TestOdooConfig(unittest.TestCase):
         print("Test show_config_file passed.")
 
     @patch('signal.signal')
-    def test_signal_handling_setup(self, mock_signal: MagicMock) -> None:
+    @patch('odoo_config.report_config_file_status')
+    def test_signal_handling_setup(self, mock_report: MagicMock, mock_signal: MagicMock) -> None:
         """Test that signal handlers are set up correctly in main."""
         with patch.object(sys, 'argv', ['odoo_config.py']):
             with patch('odoo_config.ensure_config_file_exists'):
@@ -324,6 +330,26 @@ class TestOdooConfig(unittest.TestCase):
             mock_print.assert_called_with("Received signal 15, terminating gracefully.", file=sys.stderr)
             mock_exit.assert_called_with(1)
         print("Test signal_handler passed.")
+
+    @patch('builtins.print')
+    @patch('os.path.getsize', return_value=42)
+    @patch('os.path.isfile', return_value=True)
+    def test_report_config_file_status_exists(self, mock_isfile: MagicMock, mock_getsize: MagicMock, mock_print: MagicMock) -> None:
+        """report_config_file_status should log file existence and size."""
+        odoo_config.report_config_file_status()
+        mock_getsize.assert_called_with(self.config_file_path)
+        mock_print.assert_called_with(f"Config file '{self.config_file_path}' exists (42 bytes).", file=sys.stderr)
+        print("Test report_config_file_status_exists passed.")
+
+    @patch('sys.exit')
+    @patch('builtins.print')
+    @patch('os.path.isfile', return_value=False)
+    def test_report_config_file_status_missing(self, mock_isfile: MagicMock, mock_print: MagicMock, mock_exit: MagicMock) -> None:
+        """report_config_file_status should exit when file is missing."""
+        odoo_config.report_config_file_status()
+        mock_exit.assert_called_with(1)
+        mock_print.assert_called_with(f"Error: Config file '{self.config_file_path}' does not exist.", file=sys.stderr)
+        print("Test report_config_file_status_missing passed.")
 
 
 if __name__ == '__main__':
