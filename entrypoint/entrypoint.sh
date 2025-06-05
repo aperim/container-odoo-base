@@ -1185,7 +1185,9 @@ main() {
     }
   fi
 
-  # Ensure odoo.conf exists with sane defaults after initialization or wait
+  # Ensure odoo.conf exists before upgrade.
+  # Other helpers like set_admin_password will create the file later,
+  # but upgrade_odoo runs first and requires it to exist.
   odoo-config --defaults || {
     log "Failed to ensure Odoo configuration defaults."
     exit 1
