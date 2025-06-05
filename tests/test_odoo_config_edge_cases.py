@@ -23,12 +23,13 @@ class TestOdooConfigEdgeCases(unittest.TestCase):
         mock_exit.assert_called_with(1)
         mock_open_file.assert_called_with(self.config_path + '.lock', 'a', encoding='utf-8')
 
+    @patch('os.chmod')
     @patch('sys.exit')
     @patch('fcntl.flock', side_effect=OSError(errno.ENOLCK, 'No locks'))
     @patch('os.open')
     @patch('os.makedirs')
     @patch('builtins.open', new_callable=mock_open)
-    def test_ensure_config_file_exists_lock_failure(self, mock_open_file: MagicMock, mock_makedirs: MagicMock, mock_os_open: MagicMock, mock_flock: MagicMock, mock_exit: MagicMock) -> None:
+    def test_ensure_config_file_exists_lock_failure(self, mock_open_file: MagicMock, mock_makedirs: MagicMock, mock_os_open: MagicMock, mock_flock: MagicMock, mock_exit: MagicMock, mock_chmod: MagicMock) -> None:
         """ensure_config_file_exists should exit on lock failure."""
         mock_os_open.return_value = 3
         handle = MagicMock()
@@ -38,13 +39,14 @@ class TestOdooConfigEdgeCases(unittest.TestCase):
             odoo_config.ensure_config_file_exists()
         mock_exit.assert_called_with(1)
 
+    @patch('os.chmod')
     @patch('sys.exit')
     @patch('fcntl.flock', side_effect=OSError(errno.ENOLCK, 'No locks'))
     @patch('tempfile.mkstemp', return_value=(3, '/tmp/tmpfile'))
     @patch('os.fdopen')
     @patch('os.makedirs')
     @patch('builtins.open', new_callable=mock_open)
-    def test_write_config_lines_lock_failure(self, mock_open_file: MagicMock, mock_makedirs: MagicMock, mock_fdopen: MagicMock, mock_mkstemp: MagicMock, mock_flock: MagicMock, mock_exit: MagicMock) -> None:
+    def test_write_config_lines_lock_failure(self, mock_open_file: MagicMock, mock_makedirs: MagicMock, mock_fdopen: MagicMock, mock_mkstemp: MagicMock, mock_flock: MagicMock, mock_exit: MagicMock, mock_chmod: MagicMock) -> None:
         """write_config_lines should exit if lock acquisition fails."""
         handle = MagicMock()
         handle.fileno.return_value = 3
