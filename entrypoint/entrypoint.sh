@@ -1185,6 +1185,14 @@ main() {
     }
   fi
 
+  # Ensure odoo.conf exists before upgrade.
+  # Other helpers like set_admin_password will create the file later,
+  # but upgrade_odoo runs first and requires it to exist.
+  odoo-config --defaults || {
+    log "Failed to ensure Odoo configuration defaults."
+    exit 1
+  }
+
   check_scaffolded_semaphore
   upgrade_odoo
   set_admin_password
