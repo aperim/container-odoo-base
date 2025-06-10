@@ -35,6 +35,13 @@
 		"ghcr.io/christophermacgown/devcontainer-features/minio-client:1": {
 			"vendor": "linux",
 			"architecture": "amd64"
+		},
+		"ghcr.io/devcontainers/features/node:1": {
+			"version": "lts",
+			"nodeGypDependencies": true,
+			"pnpmVersion": "latest",
+			"nvmVersion": "latest",
+			"installYarnUsingApt": true
 		}
 	},
 	// Use this environment variable if you need to bind mount your local source code into a new container.
@@ -71,7 +78,7 @@
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
 	// "forwardPorts": [],
 	// Use 'postCreateCommand' to run commands after the container is created.
-	"postCreateCommand": "sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get -y install libpq-dev && sudo apt-cache clean && git config --global --add safe.directory /workspaces/container-odoo; pip install --upgrade pip && pip install --user tqdm pyyaml && pip install -r requirements.txt",
+	"postCreateCommand": "mkdir -p ~/.codex && (test -f ~/.codex/config.json || echo '{}' > ~/.codex/config.json) && jq '. + {\"model\":\"codex-mini-latest\",\"approvalMode\":\"full-auto\",\"fullAutoErrorMode\":\"ask-user\",\"notify\":true}' ~/.codex/config.json > ~/.codex/config.tmp && mv ~/.codex/config.tmp ~/.codex/config.json && sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get -y install libpq-dev patch makepatch ripgrep && sudo apt-cache clean && npm i -g @openai/codex@0.1.2504251709 && git config --global --add safe.directory /workspaces/container-odoo; pip install --upgrade pip && pip install --user tqdm pyyaml && pip install -r requirements.txt",
 	// Configure tool-specific properties.
 	// "customizations": {},
 	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.

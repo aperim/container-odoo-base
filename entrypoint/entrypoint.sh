@@ -78,6 +78,99 @@ is_blocked_addon() {
   return 1
 }
 
+# -----------------------------------------------------------------------------
+# Generic helper to build the list of addons residing in given paths, honouring 
+#  * ODOO_LANGUAGES         – localisation filter (same algorithm as initialise)
+#  * ODOO_ADDON_INIT_BLOCKLIST – comma-separated glob patterns to exclude
+# It exposes semantically identical behaviour to the collect_addons function
+# previously defined inside initialize_odoo so it can be reused by other
+# top-level helpers (e.g. upgrade_odoo) without requiring initialization to run
+# first.
+# -----------------------------------------------------------------------------
+collect_addons() {
+  # Globals used: ODOO_LANGUAGES, ODOO_ADDON_INIT_BLOCKLIST
+  # Arguments:
+  #   $1  – name of bash array variable to populate (passed by nameref)
+  #   $@  – one or more addon directory roots to scan
+  local -n _out_array=$1
+  shift || true
+  local _addon_paths=("$@")
+
+  # -------------------------------------------------------------------------
+  # Build list of supported country codes from languages
+  # -------------------------------------------------------------------------
+  readonly DEFAULT_ODOO_LANGUAGES="en_AU,en_CA,en_IN,en_NZ,en_UK,en_US"
+  local _langs="${ODOO_LANGUAGES:-$DEFAULT_ODOO_LANGUAGES}"
+  declare -A _seen_cc=()
+  local -a _country_codes=()
+  local _lang
+  IFS=',' read -ra _lang <<<"$_langs"
+  for _l in "${_lang[@]}"; do
+    if [[ "$_l" == *_* ]]; then
+      local _cc="${_l#*_}"
+      _cc="${_cc,,}"
+      if [[ -z "${_seen_cc[$_cc]:-}" ]]; then
+        _country_codes+=("$_cc")
+        _seen_cc[$_cc]=1
+      fi
+    fi
+  done
+
+  # Parse blocklist (comma / space separated)
+  local _block_raw="${ODOO_ADDON_INIT_BLOCKLIST:-}"
+  local -a _blocklist=()
+  if [[ -n "$_block_raw" ]]; then
+    _block_raw="${_block_raw//,/ }"
+    read -r -a _blocklist <<<"$_block_raw"
+  fi
+
+  # Iterate directories
+  local _addon_path _dir _addon_name
+  for _addon_path in "${_addon_paths[@]}"; do
+    [[ -d "$_addon_path" ]] || { log "Addon path '$_addon_path' not found"; continue; }
+
+    for _dir in "$_addon_path"/*; do
+      [[ -d "$_dir" && -f "$_dir/__manifest__.py" ]] || continue
+
+      _addon_name="$(basename "$_dir")"
+
+      # Blocklist filter
+      if is_blocked_addon "$_addon_name" "${_blocklist[@]}"; then
+        log "collect_addons: Skipping blocked addon '$_addon_name'"
+        continue
+      fi
+
+      # Localisation filter for l10n modules
+      if [[ "$_addon_name" == *"l10n"* ]]; then
+        # Extract candidate country codes from addon name
+        IFS='_' read -ra _parts <<<"$_addon_name"
+        local -a _addon_cc=()
+        local _p
+        for _p in "${_parts[@]}"; do
+          if [[ "$_p" =~ ^[a-z]{2}$ ]]; then
+            _addon_cc+=("$_p")
+          fi
+        done
+
+        local _matched=false
+        local _acc
+        for _acc in "${_addon_cc[@]}"; do
+          if [[ " ${_country_codes[*]} " == *" $_acc "* ]]; then
+            _matched=true; break
+          fi
+        done
+
+        if [[ "$_matched" == false ]]; then
+          log "collect_addons: Skipping localisation addon '$_addon_name' (lang filter)"
+          continue
+        fi
+      fi
+
+      _out_array+=("$_addon_name")
+    done
+  done
+}
+
 # Function to handle custom commands
 handle_custom_command() {
   # Execute custom command provided as arguments
@@ -887,11 +980,11 @@ upgrade_odoo() {
     UPGRADE_LOCK_HELD=true
 
     if update_needed; then
-      log "Starting Odoo module upgrade..."
+      log "Starting Odoo module upgrade (sequential)..."
 
       # Determine database connection parameters
       local db_host db_port db_user db_password db_sslmode
-      if [[ -n "${PGBOUNCER_HOST}" ]]; then
+      if [[ -n "${PGBOUNCER_HOST:-}" ]]; then
         db_host="${PGBOUNCER_HOST}"
         db_port="${PGBOUNCER_PORT:-5432}"
         db_user="${POSTGRES_USER:-odoo}"
@@ -909,36 +1002,128 @@ upgrade_odoo() {
       local addon_paths_str
       addon_paths_str="$(get_addons_paths)"
 
-      # Now, call Odoo with --update=all
-      gosu odoo /usr/bin/odoo server \
-        --update=all \
-        --database="${POSTGRES_DB}" \
-        --stop-after-init \
-        --db_host="${db_host}" \
-        --db_port="${db_port}" \
-        --db_user="${db_user}" \
-        --db_password="${db_password}" \
-        --db_sslmode="${db_sslmode}" \
-        --data-dir=/var/lib/odoo \
-        --addons-path="$addon_paths_str" \
-        --config=/etc/odoo/odoo.conf
+      # Helper to run module upgrade for a single module
+      _run_module_upgrade() {
+        local module_name="$1"
+        log "Upgrading module '$module_name'..."
+        gosu odoo /usr/bin/odoo server \
+          --update="${module_name}" \
+          --database="${POSTGRES_DB}" \
+          --stop-after-init \
+          --db_host="${db_host}" \
+          --db_port="${db_port}" \
+          --db_user="${db_user}" \
+          --db_password="${db_password}" \
+          --db_sslmode="${db_sslmode}" \
+          --data-dir=/var/lib/odoo \
+          --addons-path="$addon_paths_str" \
+          --config=/etc/odoo/odoo.conf
+        return "$?"
+      }
 
-      local upgrade_exit_code="$?"
-      if [[ "$upgrade_exit_code" -ne 0 ]]; then
-        log "Odoo module upgrade failed with exit code $upgrade_exit_code."
+      # Build list of modules to upgrade. We rely on the database to provide the precise list.
+      # Build list of addons using collect_addons for consistency with initialization
+      # ---------------------------------------------------------------------------
+      # Prepare supported language country codes for localisation filtering (same
+      # logic as initialize_odoo)
+      readonly DEFAULT_ODOO_LANGUAGES="en_AU,en_CA,en_IN,en_NZ,en_UK,en_US"
+      local odoo_languages="${ODOO_LANGUAGES:-$DEFAULT_ODOO_LANGUAGES}"
+
+      # Extract unique country codes from ODOO_LANGUAGES
+      declare -ag unique_country_codes=()
+      if [[ -n "$odoo_languages" ]]; then
+        local _lang
+        IFS=',' read -ra _lang <<<"$odoo_languages"
+        declare -A _seen_codes=()
+        local _code
+        for _lang in "${_lang[@]}"; do
+          if [[ "$_lang" == *"_"* ]]; then
+            _code="${_lang#*_}"
+            _code="${_code,,}"
+            if [[ -z "${_seen_codes[$_code]:-}" ]]; then
+              unique_country_codes+=("$_code")
+              _seen_codes[$_code]=1
+            fi
+          fi
+        done
+      fi
+
+      # Assemble addon paths array from get_addons_paths result
+      IFS=',' read -ra addon_paths <<<"$addon_paths_str"
+
+      local -a modules_array_tmp=()
+      collect_addons modules_array_tmp "${addon_paths[@]}"
+
+      # Ensure mandatory modules are always included
+      local mandatory_modules=("web" "base")
+      local m
+      for m in "${mandatory_modules[@]}"; do
+        if [[ ! " ${modules_array_tmp[*]} " =~ " $m " ]]; then
+          modules_array_tmp+=("$m")
+        fi
+      done
+
+      if (( ${#modules_array_tmp[@]} == 0 )); then
+        log "No addons detected via collect_addons. Nothing to upgrade."
         release_upgrade_lock
-        exit 2
-      else
-        log "Odoo module upgrade completed successfully."
-        # Update the timestamp file
+        return 0
+      fi
+
+      local -a modules_array=("${modules_array_tmp[@]}")
+
+      local -a failed_modules=("${modules_array[@]}")
+      local max_attempts=3
+      local attempt=1
+
+      while (( attempt <= max_attempts )) && (( ${#failed_modules[@]} > 0 )); do
+        log "Starting module upgrade attempt ${attempt}/${max_attempts}. Modules to process: ${failed_modules[*]}"
+        local -a still_failing=()
+
+        for module in "${failed_modules[@]}"; do
+          if [[ "${module}" == "all" ]]; then
+            # Fallback path; run traditional all update once and break loop
+            _run_module_upgrade "all"
+            if [[ $? -ne 0 ]]; then
+              still_failing=("all")
+            fi
+            break  # nothing else to process
+          else
+            _run_module_upgrade "${module}"
+            if [[ $? -ne 0 ]]; then
+              log "Module '${module}' failed to upgrade (attempt ${attempt})."
+              still_failing+=("${module}")
+            else
+              log "Module '${module}' upgraded successfully (attempt ${attempt})."
+            fi
+          fi
+        done
+
+        failed_modules=("${still_failing[@]}")
+
+        if (( ${#failed_modules[@]} > 0 )); then
+          if (( attempt < max_attempts )); then
+            log "Some modules failed to upgrade on attempt ${attempt}. Will retry after short delay: ${failed_modules[*]}"
+            sleep 5
+          fi
+        fi
+
+        ((attempt++))
+      done
+
+      if (( ${#failed_modules[@]} == 0 )); then
+        log "All modules upgraded successfully."
+        # Update timestamp file only when upgrade completed fully
         if ! update_timestamp_file; then
           log "Failed to update timestamp file."
         fi
+      else
+        log "WARNING: The following modules failed to upgrade after ${max_attempts} attempts: ${failed_modules[*]}"
+        # Not treated as fatal. Timestamp is not updated to allow future retries.
       fi
+
     else
       log "No update needed. Skipping module upgrade."
     fi
-
     # Release the lock
     release_upgrade_lock
 
