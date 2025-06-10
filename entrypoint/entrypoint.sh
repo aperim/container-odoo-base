@@ -25,6 +25,8 @@ readonly SCAFFOLDED_SEMAPHORE="/etc/odoo/.scaffolded"
 readonly ADDON_UPDATE_TIMESTAMP="/etc/odoo/.timestamp"
 readonly INIT_LOCK="initlead"
 readonly UPGRADE_LOCK="upgradelead"
+# Languages supported by default when ODOO_LANGUAGES env var isn't provided.
+readonly DEFAULT_ODOO_LANGUAGES="en_AU,en_CA,en_IN,en_NZ,en_UK,en_US"
 
 # Global variables
 WORKERS=0
@@ -76,6 +78,187 @@ is_blocked_addon() {
     fi
   done
   return 1
+}
+
+# -----------------------------------------------------------------------------
+# Generic helper to build the list of addons residing in given paths, honouring 
+#  * ODOO_LANGUAGES         – localisation filter (same algorithm as initialise)
+#  * ODOO_ADDON_INIT_BLOCKLIST – comma-separated glob patterns to exclude
+# It exposes semantically identical behaviour to the collect_addons function
+# previously defined inside initialize_odoo so it can be reused by other
+# top-level helpers (e.g. upgrade_odoo) without requiring initialization to run
+# first.
+# -----------------------------------------------------------------------------
+collect_addons() {
+  # Purpose: populate the provided bash array with addon names ordered by
+  # dependency, deduplicated and filtered according to localisation and
+  # block-list rules.
+  # Globals:
+  #   ODOO_LANGUAGES, ODOO_ADDON_INIT_BLOCKLIST, DEFAULT_ODOO_LANGUAGES
+  # Arguments:
+  #   $1 – nameref to output array variable.
+  #   $@ – list of addon root directories to scan.
+  local -n _out_array=$1
+  shift
+  local _addon_paths=("$@")
+
+  # -------------------------------------------------------------------------
+  # Build list of supported country codes from languages
+  # -------------------------------------------------------------------------
+  local _langs="${ODOO_LANGUAGES:-$DEFAULT_ODOO_LANGUAGES}"
+  declare -A _seen_cc=()
+  local -a _country_codes=()
+  local _lang
+  IFS=',' read -ra _lang <<<"$_langs"
+  for _l in "${_lang[@]}"; do
+    if [[ "$_l" == *_* ]]; then
+      local _cc="${_l#*_}"
+      _cc="${_cc,,}"
+      if [[ -z "${_seen_cc[$_cc]:-}" ]]; then
+        _country_codes+=("$_cc")
+        _seen_cc[$_cc]=1
+      fi
+    fi
+  done
+
+  # Parse blocklist (comma / space separated)
+  local _block_raw="${ODOO_ADDON_INIT_BLOCKLIST:-}"
+  local -a _blocklist=()
+  if [[ -n "$_block_raw" ]]; then
+    _block_raw="${_block_raw//,/ }"
+    read -r -a _blocklist <<<"$_block_raw"
+  fi
+
+  # Iterate directories, gather module -> manifest path mapping
+  local -A _mod2path=()
+  local -a _discover_order=()
+  local _addon_path _dir _addon_name
+  for _addon_path in "${_addon_paths[@]}"; do
+    [[ -d "$_addon_path" ]] || { log "Addon path '$_addon_path' not found"; continue; }
+
+    for _dir in "$_addon_path"/*; do
+      [[ -d "$_dir" && -f "$_dir/__manifest__.py" ]] || continue
+
+      _addon_name="$(basename "$_dir")"
+
+      # Blocklist filter
+      if is_blocked_addon "$_addon_name" "${_blocklist[@]}"; then
+        log "collect_addons: Skipping blocked addon '$_addon_name'"
+        continue
+      fi
+
+      # Localisation filter for l10n modules
+      if [[ "$_addon_name" == *"l10n"* ]]; then
+        # Extract candidate country codes from addon name
+        IFS='_' read -ra _parts <<<"$_addon_name"
+        local -a _addon_cc=()
+        local _p
+        for _p in "${_parts[@]}"; do
+          if [[ "$_p" =~ ^[a-z]{2}$ ]]; then
+            _addon_cc+=("$_p")
+          fi
+        done
+
+        local _matched=false
+        local _acc
+        for _acc in "${_addon_cc[@]}"; do
+          if [[ " ${_country_codes[*]} " == *" $_acc "* ]]; then
+            _matched=true; break
+          fi
+        done
+
+        if [[ "$_matched" == false ]]; then
+          log "collect_addons: Skipping localisation addon '$_addon_name' (lang filter)"
+          continue
+        fi
+      fi
+
+      # Store mapping and skip duplicates to keep first discovered path
+      if [[ -z "${_mod2path[$_addon_name]:-}" ]]; then
+        _mod2path[$_addon_name]="$_dir"
+        _discover_order+=("$_addon_name")
+      fi
+    done
+  done
+
+  # -------------------------------------------------------------------------
+  # Deduplicate while preserving discovery order
+  # -------------------------------------------------------------------------
+  local -a _unique_modules=("${_discover_order[@]}")
+
+  # -------------------------------------------------------------------------
+  # Dependency ordering using Python for robustness.
+  # We pass two JSON arrays via environment variables (module names / paths)
+  # and receive a space-separated list in correct topological order.
+  # -------------------------------------------------------------------------
+  local _pybin
+  if command -v python3 >/dev/null 2>&1; then
+    _pybin="python3"
+  elif command -v python >/dev/null 2>&1; then
+    _pybin="python"
+  else
+    log "Python interpreter not found – using discovery order for dependency resolution."
+    _out_array+=("${_unique_modules[@]}")
+    return
+  fi
+
+  local _json_modules _json_paths
+  _json_modules=$(printf '%s\n' "${_unique_modules[@]}" | $_pybin -c 'import json,sys;print(json.dumps(sys.stdin.read().strip().split()))')
+  # parallel list of paths matching module array order
+  local _tmp_paths=()
+  for _m in "${_unique_modules[@]}"; do
+    _tmp_paths+=("${_mod2path[$_m]}")
+  done
+  _json_paths=$(printf '%s\n' "${_tmp_paths[@]}" | $_pybin -c 'import json,sys;print(json.dumps(sys.stdin.read().strip().split()))')
+
+  local _sorted
+  _sorted=$(MODULES="$_json_modules" PATHS="$_json_paths" $_pybin - <<'PY'
+import os, json, ast, sys, os.path
+mods = json.loads(os.environ['MODULES'])
+paths = json.loads(os.environ['PATHS'])
+mod2path = dict(zip(mods, paths))
+
+# Build dependency dict
+deps = {}
+for mod, path in mod2path.items():
+    try:
+        with open(os.path.join(path, '__manifest__.py'), 'r') as f:
+            manifest = ast.literal_eval(f.read())
+            deps[mod] = manifest.get('depends', []) or []
+    except Exception:
+        deps[mod] = []
+
+# Topological sort
+visited = {}
+order = []
+
+def visit(m):
+    state = visited.get(m, 0)
+    if state == 1:
+        # Already ordered
+        return
+    if state == -1:
+        # Currently visiting, cycle detected – ignore order constraints inside the cycle.
+        return
+    visited[m] = -1
+    for d in deps.get(m, []):
+        if d in deps:  # only care dependencies present in our list
+            visit(d)
+    visited[m] = 1
+    order.append(m)
+
+for m in mods:
+    visit(m)
+
+print(' '.join(order))
+PY
+)
+
+  # shellcheck disable=SC2206
+  _unique_modules=( ${_sorted} )
+
+  # Populate caller's array variable
+  _out_array+=("${_unique_modules[@]}")
 }
 
 # Function to handle custom commands
@@ -609,7 +792,6 @@ initialize_odoo() {
   log "Initializing Odoo instance..."
 
   # Set default supported languages if not set
-  readonly DEFAULT_ODOO_LANGUAGES="en_AU,en_CA,en_IN,en_NZ,en_UK,en_US"
   local odoo_languages="${ODOO_LANGUAGES:-$DEFAULT_ODOO_LANGUAGES}"
 
   # Extract unique country codes from ODOO_LANGUAGES
@@ -638,94 +820,7 @@ initialize_odoo() {
     fi
   done
 
-  # Function to collect addons from given paths
-  collect_addons() {
-    # Function to collect addons from specified addon paths.
-    # Globals:
-    #   None
-    # Arguments:
-    #   $1: Name of the array variable to store the addons (passed by reference).
-    #   $@: List of addon paths to search.
-    # Returns:
-    #   Populates the array with addon names.
-    local -n addons=$1 # Use nameref to reference the array variable
-    shift
-    local addon_paths=("$@")
-    local addon_path
-    local dir
 
-    # Parse the blocklist from the environment variable
-    local blocklist_var="${ODOO_ADDON_INIT_BLOCKLIST:-}"
-    local blocklist=()
-    if [[ -n "$blocklist_var" ]]; then
-      # Replace commas with spaces and then split by spaces
-      blocklist_var="${blocklist_var//,/ }"
-      read -r -a blocklist <<<"$blocklist_var"
-    fi
-
-    # Log the list of blocked domains
-    log "Blocked addons: ${blocklist[*]}"
-
-    for addon_path in "${addon_paths[@]}"; do
-      if [[ -d "$addon_path" ]]; then
-        # Iterate over each directory inside the addon path
-        for dir in "$addon_path"/*; do
-          if [[ -d "$dir" ]]; then
-            if [[ -f "$dir/__manifest__.py" ]]; then
-              local addon_name
-              addon_name="$(basename "$dir")"
-
-              # Check if the addon is in the blocklist
-              if is_blocked_addon "$addon_name" "${blocklist[@]}"; then
-                log "Skipping blocked addon '$addon_name'."
-                continue
-              fi
-
-              if [[ "$addon_name" == *"l10n"* ]]; then
-                # It's a localisation addon
-                # Extract possible country codes from addon name
-                IFS='_' read -ra parts <<<"$addon_name"
-                local addon_countries=()
-                local part
-                for part in "${parts[@]}"; do
-                  if [[ "$part" =~ ^[a-z]{2}$ ]]; then
-                    addon_countries+=("$part")
-                  fi
-                done
-
-                # Check if any of the addon countries match our supported countries
-                local include_addon=false
-                local addon_country
-                for addon_country in "${addon_countries[@]}"; do
-                  for our_country in "${unique_country_codes[@]}"; do
-                    if [[ "$addon_country" == "$our_country" ]]; then
-                      include_addon=true
-                      break 2 # Break out of both loops
-                    fi
-                  done
-                done
-
-                if [[ "$include_addon" == true ]]; then
-                  addons+=("$addon_name")
-                  log "Including localisation addon '$addon_name'."
-                else
-                  log "Skipping localisation addon '$addon_name' (not in supported languages)."
-                fi
-              else
-                # Not a localisation addon, include it
-                addons+=("$addon_name")
-                log "Including addon '$addon_name'."
-              fi
-            else
-              log "No __manifest__.py found in '$dir', skipping."
-            fi
-          fi
-        done
-      else
-        log "Addon path '$addon_path' does not exist or is not a directory."
-      fi
-    done
-  } # End of collect_addons function
 
   # Get the list of addon paths
   local addon_paths_str
@@ -887,11 +982,11 @@ upgrade_odoo() {
     UPGRADE_LOCK_HELD=true
 
     if update_needed; then
-      log "Starting Odoo module upgrade..."
+      log "Starting Odoo module upgrade (sequential)..."
 
       # Determine database connection parameters
       local db_host db_port db_user db_password db_sslmode
-      if [[ -n "${PGBOUNCER_HOST}" ]]; then
+      if [[ -n "${PGBOUNCER_HOST:-}" ]]; then
         db_host="${PGBOUNCER_HOST}"
         db_port="${PGBOUNCER_PORT:-5432}"
         db_user="${POSTGRES_USER:-odoo}"
@@ -909,36 +1004,104 @@ upgrade_odoo() {
       local addon_paths_str
       addon_paths_str="$(get_addons_paths)"
 
-      # Now, call Odoo with --update=all
-      gosu odoo /usr/bin/odoo server \
-        --update=all \
-        --database="${POSTGRES_DB}" \
-        --stop-after-init \
-        --db_host="${db_host}" \
-        --db_port="${db_port}" \
-        --db_user="${db_user}" \
-        --db_password="${db_password}" \
-        --db_sslmode="${db_sslmode}" \
-        --data-dir=/var/lib/odoo \
-        --addons-path="$addon_paths_str" \
-        --config=/etc/odoo/odoo.conf
+      # Helper to run module upgrade for a single module
+      _run_module_upgrade() {
+        local module_name="$1"
+        log "Upgrading module '$module_name'..."
+        gosu odoo /usr/bin/odoo server \
+          --update="${module_name}" \
+          --database="${POSTGRES_DB}" \
+          --stop-after-init \
+          --db_host="${db_host}" \
+          --db_port="${db_port}" \
+          --db_user="${db_user}" \
+          --db_password="${db_password}" \
+          --db_sslmode="${db_sslmode}" \
+          --data-dir=/var/lib/odoo \
+          --addons-path="$addon_paths_str" \
+          --config=/etc/odoo/odoo.conf
+        return "$?"
+      }
 
-      local upgrade_exit_code="$?"
-      if [[ "$upgrade_exit_code" -ne 0 ]]; then
-        log "Odoo module upgrade failed with exit code $upgrade_exit_code."
+      # Build list of modules to upgrade. We rely on the database to provide the precise list.
+      # Build list of addons using collect_addons for consistency with initialization
+      # ---------------------------------------------------------------------------
+      # Assemble addon paths array from get_addons_paths result
+      IFS=',' read -ra addon_paths <<<"$addon_paths_str"
+
+      local -a modules_array_tmp=()
+      collect_addons modules_array_tmp "${addon_paths[@]}"
+
+      # Ensure mandatory modules are always included
+      local mandatory_modules=("web" "base")
+      local m
+      for m in "${mandatory_modules[@]}"; do
+        if [[ ! " ${modules_array_tmp[*]} " =~ " $m " ]]; then
+          modules_array_tmp+=("$m")
+        fi
+      done
+
+      if (( ${#modules_array_tmp[@]} == 0 )); then
+        log "No addons detected via collect_addons. Nothing to upgrade."
         release_upgrade_lock
-        exit 2
-      else
-        log "Odoo module upgrade completed successfully."
-        # Update the timestamp file
+        return 0
+      fi
+
+      local -a modules_array=("${modules_array_tmp[@]}")
+
+      local -a failed_modules=("${modules_array[@]}")
+      local max_attempts=3
+      local attempt=1
+
+      while (( attempt <= max_attempts )) && (( ${#failed_modules[@]} > 0 )); do
+        log "Starting module upgrade attempt ${attempt}/${max_attempts}. Modules to process: ${failed_modules[*]}"
+        local -a still_failing=()
+
+        for module in "${failed_modules[@]}"; do
+          if [[ "${module}" == "all" ]]; then
+            # Fallback path; run traditional all update once and break loop
+            _run_module_upgrade "all"
+            if [[ $? -ne 0 ]]; then
+              still_failing=("all")
+            fi
+            break  # nothing else to process
+          else
+            _run_module_upgrade "${module}"
+            if [[ $? -ne 0 ]]; then
+              log "Module '${module}' failed to upgrade (attempt ${attempt})."
+              still_failing+=("${module}")
+            else
+              log "Module '${module}' upgraded successfully (attempt ${attempt})."
+            fi
+          fi
+        done
+
+        failed_modules=("${still_failing[@]}")
+
+        if (( ${#failed_modules[@]} > 0 )); then
+          if (( attempt < max_attempts )); then
+            log "Some modules failed to upgrade on attempt ${attempt}. Will retry after short delay: ${failed_modules[*]}"
+            sleep 5
+          fi
+        fi
+
+        ((attempt++))
+      done
+
+      if (( ${#failed_modules[@]} == 0 )); then
+        log "All modules upgraded successfully."
+        # Update timestamp file only when upgrade completed fully
         if ! update_timestamp_file; then
           log "Failed to update timestamp file."
         fi
+      else
+        log "WARNING: The following modules failed to upgrade after ${max_attempts} attempts: ${failed_modules[*]}"
+        # Not treated as fatal. Timestamp is not updated to allow future retries.
       fi
+
     else
       log "No update needed. Skipping module upgrade."
     fi
-
     # Release the lock
     release_upgrade_lock
 
