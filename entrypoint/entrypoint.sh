@@ -1049,45 +1049,62 @@ upgrade_odoo() {
 
       local -a modules_array=("${modules_array_tmp[@]}")
 
-      local -a failed_modules=("${modules_array[@]}")
+      #
+      # Upgrade algorithm requirements (specification):
+      #   1. Build full list of modules.
+      #   2. Attempt to upgrade each module once, logging failures but
+      #      continuing the loop.
+      #   3. Retry the set of failed modules two more times (total 3 attempts).
+      #   4. After the third attempt, if *all* modules remain in the failed
+      #      list, consider the upgrade a fatal error (non-zero exit status).
+      #      Otherwise, finish successfully while logging a warning that
+      #      includes the list of modules that could not be upgraded.
+
+      local -a failed_modules=("${modules_array[@]}")  # start by assuming all will fail
+      local -a attempted_failures=()                   # temp holder per round
       local max_attempts=3
       local attempt=1
 
       while (( attempt <= max_attempts )) && (( ${#failed_modules[@]} > 0 )); do
         log "Starting module upgrade attempt ${attempt}/${max_attempts}. Modules to process: ${failed_modules[*]}"
-        local -a still_failing=()
+
+        attempted_failures=()  # reset list for this iteration
 
         for module in "${failed_modules[@]}"; do
+          # Special-case support for the magic keyword "all" used by some
+          # deployments. If present we run a single global update and break –
+          # we still honour retry semantics for the keyword itself.
           if [[ "${module}" == "all" ]]; then
-            # Fallback path; run traditional all update once and break loop
-            _run_module_upgrade "all"
-            if [[ $? -ne 0 ]]; then
-              still_failing=("all")
-            fi
-            break  # nothing else to process
-          else
-            _run_module_upgrade "${module}"
-            if [[ $? -ne 0 ]]; then
-              log "Module '${module}' failed to upgrade (attempt ${attempt})."
-              still_failing+=("${module}")
+            if _run_module_upgrade "all"; then
+              log "Global module upgrade ('all') succeeded on attempt ${attempt}."
             else
-              log "Module '${module}' upgraded successfully (attempt ${attempt})."
+              log "Global module upgrade ('all') failed on attempt ${attempt}."
+              attempted_failures+=("all")
             fi
+            # Nothing else to do once the special keyword has been handled.
+            break
+          fi
+
+          if _run_module_upgrade "${module}"; then
+            log "Module '${module}' upgraded successfully (attempt ${attempt})."
+          else
+            log "Module '${module}' failed to upgrade (attempt ${attempt})."
+            attempted_failures+=("${module}")
           fi
         done
 
-        failed_modules=("${still_failing[@]}")
+        # Prepare list for next iteration (only modules that are still failing)
+        failed_modules=("${attempted_failures[@]}")
 
-        if (( ${#failed_modules[@]} > 0 )); then
-          if (( attempt < max_attempts )); then
-            log "Some modules failed to upgrade on attempt ${attempt}. Will retry after short delay: ${failed_modules[*]}"
-            sleep 5
-          fi
+        if (( ${#failed_modules[@]} > 0 )) && (( attempt < max_attempts )); then
+          log "Retrying failed modules after short delay: ${failed_modules[*]}"
+          sleep 5
         fi
 
         ((attempt++))
       done
 
+      # Evaluate final outcome
       if (( ${#failed_modules[@]} == 0 )); then
         log "All modules upgraded successfully."
         # Update timestamp file only when upgrade completed fully
@@ -1095,8 +1112,16 @@ upgrade_odoo() {
           log "Failed to update timestamp file."
         fi
       else
-        log "WARNING: The following modules failed to upgrade after ${max_attempts} attempts: ${failed_modules[*]}"
-        # Not treated as fatal. Timestamp is not updated to allow future retries.
+        # Determine if *every* module failed (fatal) or only a subset (warning)
+        local total_modules=${#modules_array[@]}
+        if (( ${#failed_modules[@]} == total_modules )); then
+          log "ERROR: Every module failed to upgrade after ${max_attempts} attempts. Failing startup."
+          release_upgrade_lock
+          return 1
+        else
+          log "WARNING: The following modules failed to upgrade after ${max_attempts} attempts and will be skipped: ${failed_modules[*]}"
+          # Successful (non-fatal) exit so container continues to start.
+        fi
       fi
 
     else
