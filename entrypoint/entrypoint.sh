@@ -1120,7 +1120,12 @@ upgrade_odoo() {
           return 1
         else
           log "WARNING: The following modules failed to upgrade after ${max_attempts} attempts and will be skipped: ${failed_modules[*]}"
-          # Successful (non-fatal) exit so container continues to start.
+          # Considered overall success – update the timestamp to prevent
+          # re-running a lengthy upgrade loop on every start-up.
+          if ! update_timestamp_file; then
+            log "Failed to update timestamp file."
+          fi
+          # Successful (non-fatal) exit continues.
         fi
       fi
 
