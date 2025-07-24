@@ -80,23 +80,5 @@ def test_gather_env_defaults() -> None:
 
 
 # ---------------------------------------------------------------------------
-#  Placeholder helpers must raise NotImplemented
+#  Placeholder helpers removed – no longer applicable
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "func",
-    [
-        ep.upgrade_modules,
-        # destroy_instance is now implemented
-    ],
-)
-def test_placeholder_raises_not_implemented(func) -> None:  # type: ignore[no-any-unbound]
-    with pytest.raises(NotImplementedError):
-        # Call with no arguments – this keeps the test minimal and avoids the
-        # need to construct an EntrypointEnv for now.  The signature accepts
-        # *None* so this is perfectly valid.
-        if inspect.signature(func).parameters:
-            func()  # type: ignore[arg-type, call-arg]
-        else:  # pragma: no cover – safeguard for future sig changes
-            func()  # noqa: B018 – duplicate call intentional

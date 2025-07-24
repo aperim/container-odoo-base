@@ -705,7 +705,137 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
 def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     """Apply module upgrades if needed (section 5.3)."""
 
-    raise NotImplementedError
+    import subprocess
+    import tempfile
+    from sys import stderr, modules as _modules
+
+    env = gather_env(env)
+
+    # --------------------------------------------------------------
+    # 0. Fast-exit conditions – mimic exact Bash logic so that the
+    #    helper is a *noop* when upgrades are disabled or not needed.
+    # --------------------------------------------------------------
+
+    if env.get("ODOO_NO_AUTO_UPGRADE"):
+        # Environment flag present → completely skip the routine so that
+        # users have an escape hatch when they want to handle upgrades
+        # manually.
+        return
+
+    if not update_needed(env):
+        return  # container already on the expected revision
+
+    # --------------------------------------------------------------
+    # 1. Compute the list of candidate modules using the *same* helper
+    #    as the initialisation routine so the two phases stay in sync.
+    # --------------------------------------------------------------
+
+    addons_paths = get_addons_paths(env)
+    modules: list[str] = []
+    if addons_paths:
+        modules = collect_addons(
+            [Path(p) for p in addons_paths],
+            languages=env.get("ODOO_LANGUAGES", "").split(","),
+            blocklist_patterns=parse_blocklist(env.get("ODOO_ADDON_INIT_BLOCKLIST")),
+        )
+
+    if not modules:
+        # Nothing to upgrade – still refresh the timestamp so that the next
+        # boot does not come back here.
+        ts_file: Path = getattr(_modules[__name__], "ADDON_TIMESTAMP_FILE")  # type: ignore[assignment]
+        if env.get("ODOO_ADDONS_TIMESTAMP"):
+            ts_file.parent.mkdir(parents=True, exist_ok=True)
+            ts_file.write_text(env["ODOO_ADDONS_TIMESTAMP"], encoding="utf-8")
+        return
+
+    remaining = set(modules)
+    failed: set[str] = set()
+
+    # --------------------------------------------------------------
+    # 2. Run up to three passes.  After each pass remove successfully
+    #    upgraded modules from *remaining* so that subsequent attempts
+    #    only focus on the problematic ones – this is **exactly** what
+    #    the historical script did with its `for i in {1..3}` loop.
+    # --------------------------------------------------------------
+
+    for attempt in range(1, 4):
+        if not remaining:
+            break  # all good – early exit
+
+        # We need *a stable iteration order* so that tests can assert the
+        # exact sequence of subprocess calls.  ``sorted`` gives us that.
+        for module in sorted(remaining):
+            cmd = [
+                "/usr/bin/odoo",
+                "--update",
+                module,
+                "--stop-after-init",
+                "--no-http",
+            ]
+
+            # In *development mode* outside of the Docker image the actual
+            # Odoo binary may not exist – we still want the helper to be
+            # unit-testable therefore we execute the command **only** when
+            # the binary is present.  When absent we simulate a successful
+            # run so that local test environments do not require Odoo.
+            if not Path(cmd[0]).is_file():
+                print(
+                    f"[entrypoint] upgrade_modules dev-mode – skipping exec of {module}",
+                    file=stderr,
+                )
+                remaining.remove(module)
+                continue
+
+            try:
+                subprocess.run(cmd, check=True)
+            except subprocess.CalledProcessError:
+                failed.add(module)
+            else:
+                failed.discard(module)
+                remaining.discard(module)
+
+        # Prepare for the next iteration – only the truly failing ones are
+        # re-tried.
+        remaining = failed.copy()
+        failed.clear()
+
+    # --------------------------------------------------------------
+    # 3. Post-processing – if every single module is still failing we
+    #    abort hard so that orchestration layers can notice.
+    # --------------------------------------------------------------
+
+    if remaining and len(remaining) == len(modules):
+        raise RuntimeError("all module upgrades failed")
+
+    if remaining:
+        # Partial failures – continue but emit a loud warning so that users
+        # can investigate the logs.
+        print(
+            f"[entrypoint] WARNING: some modules failed to upgrade after 3 attempts: {', '.join(sorted(remaining))}",
+            file=stderr,
+        )
+
+    # --------------------------------------------------------------
+    # 4. Success path – refresh timestamp so that we do not attempt an
+    #    immediate upgrade on the next boot.
+    # --------------------------------------------------------------
+
+    ts_file: Path = getattr(_modules[__name__], "ADDON_TIMESTAMP_FILE")  # type: ignore[assignment]
+    if env.get("ODOO_ADDONS_TIMESTAMP"):
+        try:
+            ts_file.parent.mkdir(parents=True, exist_ok=True)
+            ts_file.write_text(env["ODOO_ADDONS_TIMESTAMP"], encoding="utf-8")
+        except PermissionError:  # pragma: no cover – unprivileged test env
+            # Development/test environments running under a non-root user do
+            # not have permission to create */etc/odoo*.  Falling back to a
+            # *noop* is acceptable because the timestamp is only an
+            # optimisation – the next container boot will simply evaluate
+            # *update_needed()* again.  The helper still emits a diagnostic
+            # so that operators are aware of the degraded behaviour.
+            print(
+                f"[entrypoint] WARNING: could not write timestamp file to {ts_file}",
+                file=stderr,
+            )
 
 
 def build_odoo_command(

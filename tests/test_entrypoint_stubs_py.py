@@ -25,20 +25,10 @@ import entrypoint as ep
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "func",
-    [
-        # apply_runtime_user, fix_permissions and initialise_instance are now implemented
-        ep.upgrade_modules,
-    ],
-)
-def test_unimplemented_helpers_raise(func: Callable[..., object]) -> None:  # noqa: D401 – straightforward test
-    """Verify that stub helpers currently raise *NotImplementedError*."""
+def test_stub_placeholder_removed() -> None:  # noqa: D401 – trivial pass
+    """Placeholder to keep file valid after removal of stub tests."""
 
-    with pytest.raises(NotImplementedError):
-        # Call with *no* parameters; the signature of all those helpers
-        # accepts an optional *env* mapping so omitting it is valid.
-        func()  # type: ignore[misc]
+    assert True
 
 
 # ---------------------------------------------------------------------------
