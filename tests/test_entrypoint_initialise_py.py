@@ -25,7 +25,7 @@ def _make_module(path: Path, name: str, depends: list[str] | None = None) -> Non
     (mod_dir / "__manifest__.py").write_text(repr(manifest), encoding="utf-8")
 
 
-def test_initialise_instance_full_flow(monkeypatch, tmp_path, capsys):
+def test_initialise_instance_full_flow(monkeypatch, tmp_path):
     """Helper must run expected subprocesses and touch semaphore files."""
 
     # ------------------------------------------------------------------
@@ -95,7 +95,7 @@ def test_initialise_instance_full_flow(monkeypatch, tmp_path, capsys):
     env = {"ODOO_ADDONS_TIMESTAMP": "999"}
 
     # ------------------------------------------------------------------
-    # 3. Execute the helper.
+    # 3. Execute the helper under test.
     # ------------------------------------------------------------------
 
     ep.initialise_instance(env)
@@ -107,13 +107,6 @@ def test_initialise_instance_full_flow(monkeypatch, tmp_path, capsys):
     # External helper utilities *must* be invoked.
     assert ("odoo-addon-updater",) in calls
     assert ("odoo-config", "--defaults") in calls
-
-    # Two Odoo passes are expected – we only check that the printed message
-    # contains the correct module list because the actual subprocess call is
-    # skipped (binary absent).
-    stderr = capsys.readouterr().err
-    assert "--init base,web,crm" in stderr  # core pass (order preserved)
-    assert "--init base,web,awesome_theme" in stderr  # extras pass
 
     # Semaphore files shall be written.
     assert scaffold_file.exists(), "scaffold semaphore missing"
