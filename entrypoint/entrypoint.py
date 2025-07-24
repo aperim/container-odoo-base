@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Odoo Docker image – **Python replacement entry-point**
+"""Odoo Docker image - **Python replacement entry-point**
 ======================================================================
 
 This file is the *ongoing* port of the historical `entrypoint.sh` Bash script
@@ -15,7 +15,7 @@ remaining work and reviewers can spot unintentional behaviour changes.
 Legend
 ------
 ✓   implemented and covered by the test-suite.
-~   placeholder/partial implementation – behaviour differs from the Bash
+~   placeholder/partial implementation - behaviour differs from the Bash
     version but will not break common use-cases.
 ✗   not implemented yet, helper is a no-op or raises
     `NotImplementedError`.
@@ -31,7 +31,7 @@ Section | Concern (Bash)                 | Python helper              | Status
 4.3     | Add-ons filtering helper       | is_blocked_addon           | ✓
 4.3     | Add-ons collection & sorting   | collect_addons             | ✓
 2       | Gather & normalise env vars    | gather_env                 | ✓
-4.4     | Wait for Redis / Postgres      | wait_for_dependencies      | ✓ (delegates to helper CLIs – skips in dev mode)
+4.4     | Wait for Redis / Postgres      | wait_for_dependencies      | ✓ (delegates to helper CLIs - skips in dev mode)
 5.1     | Destroy instance (drop DB)     | destroy_instance           | ✓
 5.2     | First-time initialisation      | initialise_instance        | ~ (semaphores & manifest dump only, no live Odoo run)
 5.3     | Module upgrade loop            | upgrade_modules            | ✓ (executes live `odoo` when available, dev-mode stub otherwise)
@@ -46,7 +46,7 @@ Main    | Overall container flow         | main                       | ✓
 The authoritative description of each section resides in `ENTRYPOINT.md`; the
 inline unit-tests inside `tests/` exercise every *✓* and *~* line so that the
 file currently achieves **100 % statement coverage**.  Feel free to extend
-or update the table whenever a stub evolves – it is intended to be a living
+or update the table whenever a stub evolves - it is intended to be a living
 document that bridges the gap between the original shell logic and the Python
 implementation.
 """
@@ -882,8 +882,8 @@ def build_odoo_command(
 
     The routine merges the user *argv* (typically the additional
     arguments passed to the Docker container) with a **deterministic set of
-    defaults** so that running the bare image – i.e. without any explicit
-    flags – still starts a fully-featured Odoo instance that can connect to
+    defaults** so that running the bare image - i.e. without any explicit
+    flags - still starts a fully-featured Odoo instance that can connect to
     the database and serve HTTP traffic.
 
     Implementation status (v0.4):
@@ -916,7 +916,7 @@ def build_odoo_command(
         _add("--db_host", env["PGBOUNCER_HOST"])
         _add("--db_port", env["PGBOUNCER_PORT"])
         # PgBouncer terminates TLS *before* forwarding the connection to the
-        # underlying Postgres instance therefore only *sslmode* is relevant –
+        # underlying Postgres instance therefore only *sslmode* is relevant -
         # the client never needs to present certificates.  We nonetheless add
         # the *root certificate* flag when the variable is provided so that
         # operators can still enforce server certificate validation when they
@@ -962,7 +962,7 @@ def build_odoo_command(
         _add("--addons-path", ",".join(addons_paths))
 
     # ------------------------------------------------------------------
-    # Advanced flags – most containers run behind a reverse proxy
+    # Advanced flags - most containers run behind a reverse proxy
     # ------------------------------------------------------------------
 
     # Enable proxy support so that Odoo respects X-Forwarded-* headers.  We
@@ -974,7 +974,7 @@ def build_odoo_command(
     _add("--proxy-mode")
     _add("--proxy-ssl-header", "X-Forwarded-Proto,https")
 
-    # GeoIP – injected only when the standard database shipped with the
+    # GeoIP - injected only when the standard database shipped with the
     # image is present on disk.  This mirrors the opt-in behaviour of the
     # original Bash script where the flag was added unconditionally but the
     # underlying file existed in all published images.  We detect it at run
@@ -985,14 +985,13 @@ def build_odoo_command(
     if geoip_db.is_file():
         _add("--geoip-db", str(geoip_db))
 
-    # Resource limits – we copy verbatim the conservative defaults from the
+    # Resource limits - we copy verbatim the conservative defaults from the
     # reference Dockerfile.  They aim at preventing a runaway worker from
     # monopolising CPU for more than 60 seconds and from processing a single
     # request for more than 120 seconds.
 
     _add("--limit-time-cpu", "60")
     _add("--limit-time-real", "120")
-
 
     # Final command: keep consistent with §7 - we omit `gosu` because the
     # Python entry-point already runs under the correct UID/GID when used as
@@ -1008,12 +1007,12 @@ def build_odoo_command(
 def main(argv: Sequence[str] | None = None) -> None:  # pragma: no cover
     """Replicate the high-level control-flow of the historical shell script.
 
-    The function purposely **never** returns – it ultimately `exec`s either
+    The function purposely **never** returns - it ultimately `exec`s either
     a *custom user command* or the assembled ``/usr/bin/odoo server`` command
     so that the latter becomes *PID 1* inside the container exactly like the
     Bash version.  For the sake of unit-testing the heavy *os.exec*v
-    invocation is expected to be monkey-patched by the caller because – by
-    definition – nothing can run after a successful *exec*.
+    invocation is expected to be monkey-patched by the caller because - by
+    definition - nothing can run after a successful *exec*.
     """
 
     import os
@@ -1022,20 +1021,20 @@ def main(argv: Sequence[str] | None = None) -> None:  # pragma: no cover
     args = list(sys.argv[1:] if argv is None else argv)
 
     # ------------------------------------------------------------------
-    # 1. Custom command fast-path – honour the same predicate as the Bash
+    # 1. Custom command fast-path - honour the same predicate as the Bash
     #    helper so that users can run arbitrary maintenance utilities by
     #    prefixing the docker invocation.
     # ------------------------------------------------------------------
 
     if is_custom_command(args):
         # *exec* replaces the current process image therefore the Python
-        # interpreter disappears – this is the intended behaviour for the
+        # interpreter disappears - this is the intended behaviour for the
         # final container but test-suites will monkey-patch the function to
         # intercept the call.
-        os.execvp(args[0], args)  # pragma: no cover – real exec unreachable in tests
+        os.execvp(args[0], args)  # pragma: no cover - real exec unreachable in tests
 
     # ------------------------------------------------------------------
-    # 2. Regular Odoo start-up sequence – follow the ordering outlined in
+    # 2. Regular Odoo start-up sequence - follow the ordering outlined in
     #    §4 of ENTRYPOINT.md.  Every helper is wrapped in a tiny try/except
     #    that converts unforeseen exceptions to a *clean* non-zero exit so
     #    that orchestration layers (docker, kubernetes …) can restart the
@@ -1050,7 +1049,7 @@ def main(argv: Sequence[str] | None = None) -> None:  # pragma: no cover
         wait_for_dependencies(env)
 
         # ----------------------------------------------------------
-        # 2.1 Destroy request – takes precedence over anything else
+        # 2.1 Destroy request - takes precedence over anything else
         # ----------------------------------------------------------
 
         if Path("/etc/odoo/.destroy").exists():
@@ -1071,7 +1070,7 @@ def main(argv: Sequence[str] | None = None) -> None:  # pragma: no cover
             upgrade_modules(env)
 
         # ----------------------------------------------------------
-        # 2.4 Build final command and exec it – discard *odoo/odoo.py*
+        # 2.4 Build final command and exec it - discard *odoo/odoo.py*
         #     prefix when present so that user supplied flags are not
         #     duplicated (historic shell behaviour).
         # ----------------------------------------------------------
@@ -1083,19 +1082,19 @@ def main(argv: Sequence[str] | None = None) -> None:  # pragma: no cover
         cmd = build_odoo_command(user_args, env=env)
 
         # Fall-back for development environments where the real binary might
-        # not be present – in that case we simply log the command and exit.
+        # not be present - in that case we simply log the command and exit.
         if not Path(cmd[0]).is_file():
             print(
-                f"[entrypoint] dev-mode – would exec: {' '.join(cmd)}",
+                f"[entrypoint] dev-mode - would exec: {' '.join(cmd)}",
                 file=sys.stderr,
             )
             return
 
-        os.execv(cmd[0], cmd)  # pragma: no cover – unreachable in unit tests
+        os.execv(cmd[0], cmd)  # pragma: no cover - unreachable in unit tests
 
     except SystemExit:
         raise  # re-raise explicit exits unchanged
-    except Exception as exc:  # pragma: no cover – safety net
+    except Exception as exc:  # pragma: no cover - safety net
         # Emit diagnostic on stderr so that container logs capture the root
         # cause then exit with a non-zero status.
         print(f"[entrypoint] FATAL: {exc}", file=sys.stderr)
@@ -1285,7 +1284,7 @@ def update_needed(env: EntrypointEnv | None = None) -> bool:  # noqa: D401
     from sys import modules as _modules  # local import to keep global scope clean
 
     # Always prefer the *package* attribute when it exists because many
-    # callers – including the in-tree test-suite – import the *public*
+    # callers - including the in-tree test-suite - import the *public*
     # ``entrypoint`` package instead of the private sub-module.  When monkey-
     # patching they inevitably mutate that object, therefore we must inspect
     # it first so that the change is respected.
@@ -1309,7 +1308,7 @@ def update_needed(env: EntrypointEnv | None = None) -> bool:  # noqa: D401
         _path = _mod_path
     elif _mod_path is not None and _mod_path != _path:
         # Both package **and** module expose a value but they differ.  Heuristic:
-        # prefer the one whose file *currently exists* – this matches the
+        # prefer the one whose file *currently exists* - this matches the
         # behaviour of the in-tree tests which always create the temporary
         # file right before patching the attribute.
         if _mod_path.exists() and not _path.exists():
@@ -1319,7 +1318,7 @@ def update_needed(env: EntrypointEnv | None = None) -> bool:  # noqa: D401
     # containers still behave correctly when the attribute got stripped from
     # both modules for some reason (extremely unlikely but defensive code is
     # cheap).
-    if _path is None:  # pragma: no cover – safety net
+    if _path is None:  # pragma: no cover - safety net
         _path = Path("/etc/odoo/.timestamp")
 
     try:
