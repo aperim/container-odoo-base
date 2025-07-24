@@ -1,10 +1,10 @@
-"""Odoo Docker image – Python entry-point scaffolding.
+"""Odoo Docker image - Python entry-point scaffolding.
 
 This module is **only a first step** in the migration from the historical
 `entrypoint.sh` Bash script to a modern, easier-to-test Python 3
 implementation.
 
-The goal of *this file* is **not** to offer feature parity yet – the full
+The goal of *this file* is **not** to offer feature parity yet - the full
 behaviour is captured in *ENTRYPOINT.md* and will be implemented
 incrementally over several iterations.  At this stage we concentrate on:
 
@@ -16,12 +16,14 @@ incrementally over several iterations.  At this stage we concentrate on:
    function so that future contributors have a clear contract to work with.
 
 The heavy-weight routines that interact with databases, Redis or invoke Odoo
-itself are **left as placeholders** for the time being – they would require
+itself are **left as placeholders** for the time being - they would require
 substantial integration testing which is outside the scope of this first
 porting pass.
 """
 
 from __future__ import annotations
+from typing import TypedDict, Any
+from os import environ
 
 import ast
 import re
@@ -37,7 +39,7 @@ __all__ = [
     "option_in_args",
     "is_blocked_addon",
     "collect_addons",
-    # high-level control-flow helpers (scaffolding only – *not* implemented)
+    # high-level control-flow helpers (scaffolding only - *not* implemented)
     "gather_env",
     "wait_for_dependencies",
     "destroy_instance",
@@ -58,11 +60,11 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
-#  Small pure helpers introduced in this iteration – fully implemented
+#  Small pure helpers introduced in this iteration - fully implemented
 # ---------------------------------------------------------------------------
 
 
-def compute_workers(cpu_count: int | None = None) -> int:  # noqa: D401 – imperative mood
+def compute_workers(cpu_count: int | None = None) -> int:  # noqa: D401 - imperative mood
     """Return the amount of *Odoo* workers to start based on *cpu_count*.
 
     The legacy Bash entry-point used the formula ``(CPUS * 2) - 1`` which is
@@ -78,15 +80,15 @@ def compute_workers(cpu_count: int | None = None) -> int:  # noqa: D401 – impe
 
     try:
         cpus = int(cpu_count) if cpu_count is not None else os.cpu_count() or 1  # type: ignore[arg-type]
-    except (TypeError, ValueError):  # pragma: no cover – defensive fallback
+    except (TypeError, ValueError):  # pragma: no cover - defensive fallback
         cpus = 1
 
-    # Bound guard – Odoo refuses to start with zero workers.
+    # Bound guard - Odoo refuses to start with zero workers.
     cpus = max(cpus, 1)
     return cpus * 2 - 1
 
 
-def compute_http_interface(version: int | str | None) -> str:  # noqa: D401 – imperative mood
+def compute_http_interface(version: int | str | None) -> str:  # noqa: D401 - imperative mood
     """Return the default *--http-interface* value for *version*.
 
     Since Odoo 17.0 the server binds to *IPv6* ("::") by default.  Older
@@ -119,7 +121,7 @@ def get_addons_paths(env: EntrypointEnv | Mapping[str, str] | None = None) -> li
     1. /opt/odoo/enterprise
     2. /opt/odoo/community
     3. /opt/odoo/extras
-    4. /mnt/addons – user provided run-time mounts (comes last so they can
+    4. /mnt/addons - user provided run-time mounts (comes last so they can
        override existing modules if needed).
     """
 
@@ -127,7 +129,7 @@ def get_addons_paths(env: EntrypointEnv | Mapping[str, str] | None = None) -> li
     # patch *Path.is_dir* and see the change reflected immediately.
 
     # Accept a *Mapping* to facilitate direct passing of ``os.environ``.
-    _ = env  # placeholder – reserved for future customisation via env vars
+    _ = env  # placeholder - reserved for future customisation via env vars
 
     candidates = [
         Path("/opt/odoo/enterprise"),
@@ -141,7 +143,7 @@ def get_addons_paths(env: EntrypointEnv | Mapping[str, str] | None = None) -> li
 
 
 # ---------------------------------------------------------------------------
-#  Generic helpers – previously shell snippets, now Python functions
+#  Generic helpers - previously shell snippets, now Python functions
 # ---------------------------------------------------------------------------
 
 # Absolute path to the timestamp semaphore file written during initial
@@ -177,7 +179,7 @@ def parse_blocklist(value: str | None) -> list[str]:
     value = value.replace(",", " ")
     # *shlex* handles any amount of whitespace and collapses it; it also
     # understands quoting which allows a user to write a pattern containing
-    # spaces – we inherit this for free.
+    # spaces - we inherit this for free.
     return shlex.split(value)
 
 
@@ -244,7 +246,7 @@ def _iter_addons(dirs: Iterable[Path]) -> Iterable[_Addon]:
                 # parse *either* JSON or a Python literal.  We keep the same
                 # behaviour.
                 data = ast.literal_eval(content)
-            except Exception:  # pragma: no cover – invalid manifests skipped
+            except Exception:  # pragma: no cover - invalid manifests skipped
                 continue
 
             depends = tuple(data.get("depends", []))
@@ -267,7 +269,7 @@ def _topological_sort(addons: Mapping[str, _Addon]) -> list[str]:
 
     A *very small* DFS-based topological sort is sufficient for our unit
     tests.  Cycles raise :class:`ValueError` but in production we may want
-    more sophisticated handling – left for future work.
+    more sophisticated handling - left for future work.
     """
 
     visited: dict[str, int] = {}  # 0 = temp, 1 = perm
@@ -332,13 +334,13 @@ def collect_addons(
             continue
         if not _filter_localisation(addon, allowed_cc):
             continue
-        # first occurrence wins – keeps same semantics as Bash version
+        # first occurrence wins - keeps same semantics as Bash version
         addons.setdefault(addon.name, addon)
 
     # Ensure mandatory core modules are always present if they were discovered
     # somewhere in *paths*.  The Bash helper enforced at least *base* and
     # *web* to be part of initialisation but for unit tests we do **not**
-    # inject them automatically – that behaviour will be revisited later.
+    # inject them automatically - that behaviour will be revisited later.
 
     if not addons:
         return []
@@ -358,20 +360,16 @@ def collect_addons(
 #
 # * The Python entry-point exposes a clear, discoverable API surface.
 # * Exhaustive doc-strings document the expected semantics, inputs and
-#   outputs – effectively serving as living specification.
+#   outputs - effectively serving as living specification.
 # * Unit-tests can import the symbols and rely on *stable* exceptions
 #   (``NotImplementedError``) until real code lands.
-
-
-from os import environ
-from typing import TypedDict, Any
 
 
 class EntrypointEnv(TypedDict):
     """Strongly-typed subset of the environment used by the entry-point.
 
     All keys are marked as *required* because :pyfunc:`gather_env` always
-    provides **every** one of them – falling back to sensible defaults (e.g.
+    provides **every** one of them - falling back to sensible defaults (e.g.
     empty string) when the corresponding variable is absent from
     ``os.environ``.  Making the mapping *total* avoids false-positive typing
     diagnostics when call-sites legitimately access a value with the
@@ -430,7 +428,7 @@ def gather_env(
 
     src = environ if env is None else env
 
-    def _get(key: str, default: str = "") -> str:  # noqa: WPS430 – tiny nested helper
+    def _get(key: str, default: str = "") -> str:  # noqa: WPS430 - tiny nested helper
         return src.get(key, default)
 
     return EntrypointEnv(
@@ -460,11 +458,11 @@ def gather_env(
 
 
 # ---------------------------------------------------------------------------
-#  Control-flow scaffolding – currently raise *NotImplemented*
+#  Control-flow scaffolding - currently raise *NotImplemented*
 # ---------------------------------------------------------------------------
 
 
-def wait_for_dependencies(env: EntrypointEnv | None = None) -> None:  # noqa: D401 – imperative mood
+def wait_for_dependencies(env: EntrypointEnv | None = None) -> None:  # noqa: D401 - imperative mood
     """Block until Redis and Postgres/PgBouncer are reachable.
 
     *Implementation pending.*  The function will orchestrate calls to
@@ -473,7 +471,7 @@ def wait_for_dependencies(env: EntrypointEnv | None = None) -> None:  # noqa: D4
     """
 
     # Delegates the *real* blocking logic to helper utilities that are already
-    # part of the image and – crucially – fully unit-tested on their own. By
+    # part of the image and - crucially - fully unit-tested on their own. By
     # wrapping them we gain two advantages:
     #
     # 1. The entry-point keeps a *single* place where the dependency-readiness
@@ -486,7 +484,7 @@ def wait_for_dependencies(env: EntrypointEnv | None = None) -> None:  # noqa: D4
     env = gather_env(env)
 
     # ------------------------------------------------------------------
-    # Wait for Redis – we do not forward any parameter because the helper
+    # Wait for Redis - we do not forward any parameter because the helper
     # reads *all* configuration from environment variables (REDIS_HOST …)
     # which is consistent with the historical behaviour.
     # ------------------------------------------------------------------
@@ -495,7 +493,7 @@ def wait_for_dependencies(env: EntrypointEnv | None = None) -> None:  # noqa: D4
         from tools.src.lock_handler import wait_for_redis  # type: ignore
 
         wait_for_redis()  # blocks until Redis replies to PING
-    except ModuleNotFoundError:  # pragma: no cover – missing optional dep
+    except ModuleNotFoundError:  # pragma: no cover - missing optional dep
         # The helper script may be absent from *editable installs* of the
         # code-base (e.g. when we run the unit tests outside of the final
         # Docker image).  Failing hard would make local development painful
@@ -510,7 +508,7 @@ def wait_for_dependencies(env: EntrypointEnv | None = None) -> None:  # noqa: D4
         )
 
     # ------------------------------------------------------------------
-    # Wait for PostgreSQL or PgBouncer – we pick the correct helper based on
+    # Wait for PostgreSQL or PgBouncer - we pick the correct helper based on
     # the same precedence rule as the shell script: if *PGBOUNCER_HOST* is
     # non-empty we exclusively use the PgBouncer endpoint, otherwise we hit
     # Postgres directly.
@@ -541,7 +539,7 @@ def wait_for_dependencies(env: EntrypointEnv | None = None) -> None:  # noqa: D4
                 ssl_root_cert=env.get("POSTGRES_SSL_ROOT_CERT") or None,
                 ssl_crl=env.get("POSTGRES_SSL_CRL") or None,
             )
-    except ModuleNotFoundError:  # pragma: no cover – optional dependency missing
+    except ModuleNotFoundError:  # pragma: no cover - optional dependency missing
         import sys
 
         print(
@@ -585,7 +583,7 @@ def destroy_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
         "-U",
         env["POSTGRES_USER"],
         "-d",
-        "postgres",  # connect to maintenance DB – *not* the one we drop
+        "postgres",  # connect to maintenance DB - *not* the one we drop
         "-v",
         "ON_ERROR_STOP=1",  # fail fast so the entry-point aborts on error
     ]
@@ -610,10 +608,10 @@ def destroy_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     # 3. Give PgBouncer some time to flush stale connections so that the
     #    subsequent initialisation does not hit *"cannot drop / database is
     #    being used"* errors.  The historical script used a fixed 10 second
-    #    delay – we preserve the value for compatibility.
+    #    delay - we preserve the value for compatibility.
     time.sleep(10)
 
-    # 4. Remove filestore on the filesystem – the directory may be absent if
+    # 4. Remove filestore on the filesystem - the directory may be absent if
     #    the database was never initialised.  We ignore errors on purpose so
     #    that a partially missing filestore does not block start-up.
     filestore_dir = Path("/var/lib/odoo") / "filestore" / dbname
@@ -624,17 +622,17 @@ def destroy_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
         try:
             sem.unlink()
         except FileNotFoundError:
-            # Perfectly fine – the semantics of *destroy* is best-effort.
+            # Perfectly fine - the semantics of *destroy* is best-effort.
             pass
 
 
 def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     """Create a brand-new Odoo database with initial modules.
 
-    Corresponds to section 5.2 – *Initialise brand new instance*.
+    Corresponds to section 5.2 - *Initialise brand new instance*.
     """
 
-    # NOTE – The *real* initialisation is a complex two-pass process that
+    # NOTE - The *real* initialisation is a complex two-pass process that
     # prepares the database and invokes a transient Odoo server several
     # times.  Re-implementing it entirely would require heavyweight
     # integration tests with a running Postgres instance, therefore **this
@@ -671,7 +669,7 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     #    brand-new feature compared to the legacy Bash script but is cheap
     #    to provide and extremely useful when debugging complex
     #    deployments).  The file is deleted automatically once written when
-    #    used outside of tests – for tests we patch *tempfile.NamedTemporaryFile*
+    #    used outside of tests - for tests we patch *tempfile.NamedTemporaryFile*
     #    to keep it around.
 
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as fp:
@@ -692,19 +690,19 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     ]
 
     # Use *print* so that library users of the helper have a simple way to
-    # capture the diagnostic via *capsys* – we purposely avoid any logging
+    # capture the diagnostic via *capsys* - we purposely avoid any logging
     # framework because the parent process (Docker init) intercepts stdout
     # and stderr already.
 
-    print(f"[entrypoint] initialise instance – would exec: {' '.join(cmd)}", file=sys.stderr)
+    print(f"[entrypoint] initialise instance - would exec: {' '.join(cmd)}", file=sys.stderr)
 
     # Intentionally *do not* run the command outside of a full containerised
     # environment.  When the helper is executed inside the final image it
     # will be called from *main()* and we still want the real initialisation
-    # to happen – we therefore gate the execution behind the presence of the
+    # to happen - we therefore gate the execution behind the presence of the
     # odoo binary at its expected absolute path.
 
-    if Path(cmd[0]).is_file():  # pragma: no cover – not executed during unit tests
+    if Path(cmd[0]).is_file():  # pragma: no cover - not executed during unit tests
         subprocess.run(cmd, check=True)
 
     # ------------------------------------------------------------------
@@ -731,7 +729,7 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     env = gather_env(env)
 
     # --------------------------------------------------------------
-    # 0. Fast-exit conditions – mimic exact Bash logic so that the
+    # 0. Fast-exit conditions - mimic exact Bash logic so that the
     #    helper is a *noop* when upgrades are disabled or not needed.
     # --------------------------------------------------------------
 
@@ -759,7 +757,7 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
         )
 
     if not modules:
-        # Nothing to upgrade – still refresh the timestamp so that the next
+        # Nothing to upgrade - still refresh the timestamp so that the next
         # boot does not come back here.
         ts_file: Path = getattr(_modules[__name__], "ADDON_TIMESTAMP_FILE")  # type: ignore[assignment]
         if env.get("ODOO_ADDONS_TIMESTAMP"):
@@ -773,13 +771,13 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     # --------------------------------------------------------------
     # 2. Run up to three passes.  After each pass remove successfully
     #    upgraded modules from *remaining* so that subsequent attempts
-    #    only focus on the problematic ones – this is **exactly** what
+    #    only focus on the problematic ones - this is **exactly** what
     #    the historical script did with its `for i in {1..3}` loop.
     # --------------------------------------------------------------
 
     for attempt in range(1, 4):
         if not remaining:
-            break  # all good – early exit
+            break  # all good - early exit
 
         # We need *a stable iteration order* so that tests can assert the
         # exact sequence of subprocess calls.  ``sorted`` gives us that.
@@ -793,13 +791,13 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
             ]
 
             # In *development mode* outside of the Docker image the actual
-            # Odoo binary may not exist – we still want the helper to be
+            # Odoo binary may not exist - we still want the helper to be
             # unit-testable therefore we execute the command **only** when
             # the binary is present.  When absent we simulate a successful
             # run so that local test environments do not require Odoo.
             if not Path(cmd[0]).is_file():
                 print(
-                    f"[entrypoint] upgrade_modules dev-mode – skipping exec of {module}",
+                    f"[entrypoint] upgrade_modules dev-mode - skipping exec of {module}",
                     file=stderr,
                 )
                 remaining.remove(module)
@@ -813,13 +811,13 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
                 failed.discard(module)
                 remaining.discard(module)
 
-        # Prepare for the next iteration – only the truly failing ones are
+        # Prepare for the next iteration - only the truly failing ones are
         # re-tried.
         remaining = failed.copy()
         failed.clear()
 
     # --------------------------------------------------------------
-    # 3. Post-processing – if every single module is still failing we
+    # 3. Post-processing - if every single module is still failing we
     #    abort hard so that orchestration layers can notice.
     # --------------------------------------------------------------
 
@@ -827,7 +825,7 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
         raise RuntimeError("all module upgrades failed")
 
     if remaining:
-        # Partial failures – continue but emit a loud warning so that users
+        # Partial failures - continue but emit a loud warning so that users
         # can investigate the logs.
         print(
             f"[entrypoint] WARNING: some modules failed to upgrade after 3 attempts: {', '.join(sorted(remaining))}",
@@ -835,7 +833,7 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
         )
 
     # --------------------------------------------------------------
-    # 4. Success path – refresh timestamp so that we do not attempt an
+    # 4. Success path - refresh timestamp so that we do not attempt an
     #    immediate upgrade on the next boot.
     # --------------------------------------------------------------
 
@@ -844,11 +842,11 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
         try:
             ts_file.parent.mkdir(parents=True, exist_ok=True)
             ts_file.write_text(env["ODOO_ADDONS_TIMESTAMP"], encoding="utf-8")
-        except PermissionError:  # pragma: no cover – unprivileged test env
+        except PermissionError:  # pragma: no cover - unprivileged test env
             # Development/test environments running under a non-root user do
             # not have permission to create */etc/odoo*.  Falling back to a
             # *noop* is acceptable because the timestamp is only an
-            # optimisation – the next container boot will simply evaluate
+            # optimisation - the next container boot will simply evaluate
             # *update_needed()* again.  The helper still emits a diagnostic
             # so that operators are aware of the degraded behaviour.
             print(
@@ -873,7 +871,7 @@ def build_odoo_command(
 
     env = gather_env(env)
 
-    def _add(flag: str, *values: str) -> None:  # noqa: WPS430 – tiny helper
+    def _add(flag: str, *values: str) -> None:  # noqa: WPS430 - tiny helper
         """Append *flag* and *values* if the flag is not already in *argv*."""
 
         if option_in_args(flag, *argv):
@@ -881,7 +879,7 @@ def build_odoo_command(
         argv.extend((flag, *values))
 
     # ------------------------------------------------------------------
-    # Database connection parameters – PgBouncer takes precedence over PG.
+    # Database connection parameters - PgBouncer takes precedence over PG.
     # ------------------------------------------------------------------
 
     if env.get("PGBOUNCER_HOST"):
@@ -912,7 +910,7 @@ def build_odoo_command(
     if addons_paths:
         _add("--addons-path", ",".join(addons_paths))
 
-    # Final command: keep consistent with §7 – we omit `gosu` because the
+    # Final command: keep consistent with §7 - we omit `gosu` because the
     # Python entry-point already runs under the correct UID/GID when used as
     # PID 1 inside the image.  Adding it would complicate unit-testing.
 
@@ -932,15 +930,15 @@ def main(argv: Sequence[str] | None = None) -> None:  # pragma: no cover
     """
 
     argv = list(sys.argv[1:] if argv is None else argv)
-    print("entrypoint.py skeleton – nothing to do yet", file=sys.stderr)
+    print("entrypoint.py skeleton - nothing to do yet", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
-#  Newly added scaffolding helpers – v0.2
+#  Newly added scaffolding helpers - v0.2
 # ---------------------------------------------------------------------------
 
 
-def is_custom_command(argv: Sequence[str] | None = None) -> bool:  # noqa: D401 – imperative mood
+def is_custom_command(argv: Sequence[str] | None = None) -> bool:  # noqa: D401 - imperative mood
     """Return *True* when the CLI *argv* indicates a **user provided command**.
 
     The historical Bash script delegated *any* first argument that was **not**
@@ -968,9 +966,7 @@ def apply_runtime_user(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     `usermod` / `groupmod`.  Left as **stub** for now.
     """
 
-    import os
     import pwd
-    import grp
     import subprocess
 
     env = gather_env(env)
@@ -978,7 +974,7 @@ def apply_runtime_user(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     puid = env.get("PUID")
     pgid = env.get("PGID")
 
-    # Fast-exit when neither variable is provided – keeps the exact historical
+    # Fast-exit when neither variable is provided - keeps the exact historical
     # behaviour where the *odoo* account remains unchanged unless the user
     # explicitly requests otherwise.
     if not puid and not pgid:
@@ -986,7 +982,7 @@ def apply_runtime_user(env: EntrypointEnv | None = None) -> None:  # noqa: D401
 
     try:
         pw_record = pwd.getpwnam("odoo")
-    except KeyError as exc:  # pragma: no cover – container images always ship the user
+    except KeyError as exc:  # pragma: no cover - container images always ship the user
         raise RuntimeError("system user 'odoo' not found") from exc
 
     current_uid, current_gid = pw_record.pw_uid, pw_record.pw_gid
@@ -1014,7 +1010,7 @@ def apply_runtime_user(env: EntrypointEnv | None = None) -> None:  # noqa: D401
         if new_uid != current_uid:
             subprocess.run(["usermod", "-u", str(new_uid), "odoo"], check=True)
 
-    # Note – we purposely avoid calling `subprocess.run(['chown', '-R', …])`
+    # Note - we purposely avoid calling `subprocess.run(['chown', '-R', …])`
     # here because the recursive ownership fix is handled by
     # :pyfunc:`fix_permissions`.  Keeping them separated allows test-suites to
     # mock / override the heavy recursive call without interfering with UID/GID
@@ -1024,7 +1020,7 @@ def apply_runtime_user(env: EntrypointEnv | None = None) -> None:  # noqa: D401
 def fix_permissions(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     """Recursively chown mutable paths to *odoo:odoo*.
 
-    Behaviour will mimic the Bash implementation – resolving symlinks and
+    Behaviour will mimic the Bash implementation - resolving symlinks and
     skipping when the target already points to the read-only image layers.
     """
 
@@ -1035,7 +1031,7 @@ def fix_permissions(env: EntrypointEnv | None = None) -> None:  # noqa: D401
 
     # Paths that are expected to be **writable** at run-time.  They are the
     # same across all Odoo versions therefore we hard-code them here instead
-    # of making the list configurable – should additional directories appear
+    # of making the list configurable - should additional directories appear
     # in the future they can simply be appended.
     targets = [
         Path("/var/lib/odoo"),
@@ -1044,7 +1040,7 @@ def fix_permissions(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     ]
 
     for p in targets:
-        # Skip absent paths – some variants of the image (e.g. slim testing
+        # Skip absent paths - some variants of the image (e.g. slim testing
         # fixtures) do not create the directory at build-time.
         if not p.exists():
             continue
@@ -1058,12 +1054,12 @@ def fix_permissions(env: EntrypointEnv | None = None) -> None:  # noqa: D401
             try:
                 resolved = p.resolve(strict=True)
             except FileNotFoundError:
-                resolved = None  # broken symlink – still chown it below
+                resolved = None  # broken symlink - still chown it below
 
             if resolved and str(resolved).startswith("/opt/odoo"):
                 continue  # read-only, no need to change perms
 
-        # Recursive *chown* – we rely on the coreutils binary because it is
+        # Recursive *chown* - we rely on the coreutils binary because it is
         # significantly faster than Python's os.walk + chown in large
         # directory trees and it supports following / not following
         # symlinks consistently.  The helper is mocked in the test-suite so
@@ -1088,7 +1084,7 @@ def update_needed(env: EntrypointEnv | None = None) -> bool:  # noqa: D401
 
     # Extract the *build-time* timestamp supplied at image creation.  When the
     # variable is **absent** (empty string after :pyfunc:`str.strip`) the
-    # mechanism is considered *disabled* and we short-circuit early – this
+    # mechanism is considered *disabled* and we short-circuit early - this
     # reproduces the historical behaviour where the Bash script skipped the
     # whole upgrade stage in that situation.
 
@@ -1099,7 +1095,7 @@ def update_needed(env: EntrypointEnv | None = None) -> bool:  # noqa: D401
     # Read the last timestamp recorded by a previous successful
     # initialisation / upgrade.  Absence of the file means this is either the
     # *first* boot or that the semaphore was cleared by a manual destroy
-    # action – in both cases a full upgrade pass must run.
+    # action - in both cases a full upgrade pass must run.
 
     # Retrieve the *current* value written by the last successful
     # initialisation / upgrade.  We deliberately fetch the constant through
@@ -1124,5 +1120,5 @@ def update_needed(env: EntrypointEnv | None = None) -> bool:  # noqa: D401
 
 
 # ---------------------------------------------------------------------------
-#  End of file – the ``main()`` entry is intentionally declared *once* above.
+#  End of file - the ``main()`` entry is intentionally declared *once* above.
 # ---------------------------------------------------------------------------
