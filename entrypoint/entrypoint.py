@@ -30,6 +30,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
+import os
 
 __all__ = [
     "parse_blocklist",
@@ -61,7 +62,7 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
-def compute_workers(cpu_count: int | None) -> int:  # noqa: D401 – imperative mood
+def compute_workers(cpu_count: int | None = None) -> int:  # noqa: D401 – imperative mood
     """Return the amount of *Odoo* workers to start based on *cpu_count*.
 
     The legacy Bash entry-point used the formula ``(CPUS * 2) - 1`` which is
@@ -76,8 +77,8 @@ def compute_workers(cpu_count: int | None) -> int:  # noqa: D401 – imperative 
     """
 
     try:
-        cpus = int(cpu_count or 1)
-    except (TypeError, ValueError):  # pragma: no cover – guarded by typing
+        cpus = int(cpu_count) if cpu_count is not None else os.cpu_count() or 1  # type: ignore[arg-type]
+    except (TypeError, ValueError):  # pragma: no cover – defensive fallback
         cpus = 1
 
     # Bound guard – Odoo refuses to start with zero workers.
@@ -366,13 +367,21 @@ from os import environ
 from typing import TypedDict, Any
 
 
-class EntrypointEnv(TypedDict, total=False):
-    """Strongly-typed subset of the environment used by the entrypoint.
+class EntrypointEnv(TypedDict):
+    """Strongly-typed subset of the environment used by the entry-point.
 
-    Only *user-facing* variables documented in section « 2. Environment
-    variables » of *ENTRYPOINT.md* are represented.  Internal helper variables
-    (e.g. the endpoints computed by wrapper scripts) are deliberately left
-    out because they are an implementation detail.
+    All keys are marked as *required* because :pyfunc:`gather_env` always
+    provides **every** one of them – falling back to sensible defaults (e.g.
+    empty string) when the corresponding variable is absent from
+    ``os.environ``.  Making the mapping *total* avoids false-positive typing
+    diagnostics when call-sites legitimately access a value with the
+    subscription syntax (``env["POSTGRES_USER"]``).
+
+    The enumeration purposefully contains **only** the user-facing
+    configuration knobs documented in section « 2. Environment variables » of
+    *ENTRYPOINT.md*.  Internal helper variables (for instance the endpoints
+    computed by wrapper scripts) are not included as they are considered an
+    implementation detail.
     """
 
     # Database / PgBouncer
@@ -401,7 +410,17 @@ class EntrypointEnv(TypedDict, total=False):
     PGID: str
 
 
-def gather_env(env: Mapping[str, str] | None = None) -> EntrypointEnv:
+# Accept an already-parsed *EntrypointEnv* as well so that helper functions
+# can safely call ``gather_env(env)`` irrespective of whether *env* points to
+# the raw ``os.environ`` mapping **or** a structure returned by a previous
+# invocation of this very function.  This removes the need for repetitive
+# ``typing.cast`` sprinkled across the code-base and silences static analysis
+# tools such as *Pylance* that rightfully complained about incompatible
+# argument types.
+
+def gather_env(
+    env: Mapping[str, str] | EntrypointEnv | None = None,
+) -> EntrypointEnv:
     """Return a mapping holding *all* entrypoint variables with defaults.
 
     The helper centralises default handling so that unit-tests and production
@@ -1105,60 +1124,5 @@ def update_needed(env: EntrypointEnv | None = None) -> bool:  # noqa: D401
 
 
 # ---------------------------------------------------------------------------
-#  Pure helpers with *real* implementation – easy unit-test wins
+#  End of file – the ``main()`` entry is intentionally declared *once* above.
 # ---------------------------------------------------------------------------
-
-
-def compute_workers(cpu_count: int | None = None) -> int:
-    """Compute the *workers* flag using formula ``2 × CPU − 1``.
-
-    When *cpu_count* is not provided the helper falls back to
-    :pyfunc:`os.cpu_count` (guaranteed to be **≥1** because Docker cgroups
-    expose at least one CPU).
-    """
-
-    import os
-
-    cpus = cpu_count if cpu_count is not None else os.cpu_count() or 1
-    # Bound the result to at least **1** to avoid passing *zero* to Odoo.
-    return max(1, (2 * cpus) - 1)
-
-
-def compute_http_interface(odoo_version: int | str | None = None) -> str:
-    """Return listening interface based on *odoo_version*.
-
-    * ``::``   for version **≥17** (dual-stack IPv6 / IPv4-mapped)
-    * ``0.0.0.0`` for any lower version or when the value cannot be parsed.
-    """
-
-    try:
-        ver = int(odoo_version) if odoo_version is not None else 0
-    except (ValueError, TypeError):  # pragma: no cover – defensive fallback
-        ver = 0
-    return "::" if ver >= 17 else "0.0.0.0"
-
-
-def get_addons_paths(env: EntrypointEnv | None = None) -> list[str]:  # noqa: D401
-    """Return the **ordered** list of directories passed to ``--addons-path``.
-
-    The real implementation will honour community/enterprise/extras and
-    mounted paths.  For the time being an *empty* list is returned so that
-    callers have a well-defined type with no side-effects.
-    """
-
-    # Resolve directories in the **exact** order expected by Odoo so that the
-    # first match wins when duplicate module names exist across distributions.
-
-    base_dirs = [
-        Path("/opt/odoo/enterprise"),  # enterprise overrides community
-        Path("/opt/odoo/community"),
-        Path("/opt/odoo/extras"),
-        Path("/mnt/addons"),  # user-mounted path – last so it can override
-    ]
-
-    return [str(p) for p in base_dirs if p.is_dir()]
-
-
-
-if __name__ == "__main__":  # pragma: no cover
-    main()
