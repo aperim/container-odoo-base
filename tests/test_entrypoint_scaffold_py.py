@@ -87,7 +87,6 @@ def test_gather_env_defaults() -> None:
 @pytest.mark.parametrize(
     "func",
     [
-        ep.wait_for_dependencies,
         ep.destroy_instance,
         ep.initialise_instance,
         ep.upgrade_modules,

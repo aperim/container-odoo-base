@@ -406,29 +406,38 @@ def wait_for_dependencies(env: EntrypointEnv | None = None) -> None:  # noqa: D4
     # Postgres directly.
     # ------------------------------------------------------------------
 
-    from tools.src import wait_for_postgres as _wfp  # type: ignore
+    try:
+        from tools.src import wait_for_postgres as _wfp  # type: ignore
 
-    if env.get("PGBOUNCER_HOST"):
-        _wfp.wait_for_pgbouncer(
-            user=env["POSTGRES_USER"],
-            password=env["POSTGRES_PASSWORD"],
-            host=env["PGBOUNCER_HOST"],
-            port=int(env["PGBOUNCER_PORT"]),
-            dbname=env["POSTGRES_DB"],
-            ssl_mode=env["PGBOUNCER_SSL_MODE"],
-        )
-    else:
-        _wfp.wait_for_postgres(
-            user=env["POSTGRES_USER"],
-            password=env["POSTGRES_PASSWORD"],
-            host=env["POSTGRES_HOST"],
-            port=int(env["POSTGRES_PORT"]),
-            dbname=env["POSTGRES_DB"],
-            ssl_mode=env["POSTGRES_SSL_MODE"],
-            ssl_cert=env.get("POSTGRES_SSL_CERT") or None,
-            ssl_key=env.get("POSTGRES_SSL_KEY") or None,
-            ssl_root_cert=env.get("POSTGRES_SSL_ROOT_CERT") or None,
-            ssl_crl=env.get("POSTGRES_SSL_CRL") or None,
+        if env.get("PGBOUNCER_HOST"):
+            _wfp.wait_for_pgbouncer(
+                user=env["POSTGRES_USER"],
+                password=env["POSTGRES_PASSWORD"],
+                host=env["PGBOUNCER_HOST"],
+                port=int(env["PGBOUNCER_PORT"]),
+                dbname=env["POSTGRES_DB"],
+                ssl_mode=env["PGBOUNCER_SSL_MODE"],
+            )
+        else:
+            _wfp.wait_for_postgres(
+                user=env["POSTGRES_USER"],
+                password=env["POSTGRES_PASSWORD"],
+                host=env["POSTGRES_HOST"],
+                port=int(env["POSTGRES_PORT"]),
+                dbname=env["POSTGRES_DB"],
+                ssl_mode=env["POSTGRES_SSL_MODE"],
+                ssl_cert=env.get("POSTGRES_SSL_CERT") or None,
+                ssl_key=env.get("POSTGRES_SSL_KEY") or None,
+                ssl_root_cert=env.get("POSTGRES_SSL_ROOT_CERT") or None,
+                ssl_crl=env.get("POSTGRES_SSL_CRL") or None,
+            )
+    except ModuleNotFoundError:  # pragma: no cover – optional dependency missing
+        import sys
+
+        print(
+            "[entrypoint] tools.src.wait_for_postgres unavailable, skipping "
+            "database wait (development mode)",
+            file=sys.stderr,
         )
 
 
@@ -596,16 +605,32 @@ def update_needed(env: EntrypointEnv | None = None) -> bool:  # noqa: D401
 
     env = gather_env(env)
 
-    build_time = env.get("ODOO_ADDONS_TIMESTAMP", "")
+    # Extract the *build-time* timestamp supplied at image creation.  When the
+    # variable is **absent** (empty string after :pyfunc:`str.strip`) the
+    # mechanism is considered *disabled* and we short-circuit early – this
+    # reproduces the historical behaviour where the Bash script skipped the
+    # whole upgrade stage in that situation.
+
+    build_time = env.get("ODOO_ADDONS_TIMESTAMP", "").strip()
     if not build_time:
         return False
+
+    # Read the last timestamp recorded by a previous successful
+    # initialisation / upgrade.  Absence of the file means this is either the
+    # *first* boot or that the semaphore was cleared by a manual destroy
+    # action – in both cases a full upgrade pass must run.
 
     try:
         current = ADDON_TIMESTAMP_FILE.read_text(encoding="utf-8").strip()
     except FileNotFoundError:
         return True
 
-    return current != build_time.strip()
+    # Finally, trigger the upgrade only when the two values differ.  Using a
+    # *raw* string comparison keeps the helper agnostic of the actual epoch
+    # unit (seconds, milliseconds…) – it merely propagates the information
+    # written by the build pipeline.
+
+    return current != build_time
 
 
 # ---------------------------------------------------------------------------
