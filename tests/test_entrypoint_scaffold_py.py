@@ -87,11 +87,8 @@ def test_gather_env_defaults() -> None:
 @pytest.mark.parametrize(
     "func",
     [
-        ep.destroy_instance,
-        ep.initialise_instance,
         ep.upgrade_modules,
-        ep.apply_runtime_user,
-        ep.fix_permissions,
+        # destroy_instance is now implemented
     ],
 )
 def test_placeholder_raises_not_implemented(func) -> None:  # type: ignore[no-any-unbound]

@@ -19,24 +19,28 @@ def test_update_needed_when_file_missing(tmp_path, monkeypatch):
 
     # Redirect the constant used by the helper to our temp dir.
     ts_file = tmp_path / ".timestamp"
-    monkeypatch.setattr(ep, "ADDON_TIMESTAMP_FILE", ts_file, raising=False)
+    # Patch *inside* the real implementation module rather than the package
+    # level re-export so that the helper picks up the overridden path.
+    import sys
+
+    monkeypatch.setattr(sys.modules["entrypoint.entrypoint"], "ADDON_TIMESTAMP_FILE", ts_file, raising=False)
 
     assert ep.update_needed(env) is True
 
 
-def test_update_needed_match(tmp_path, monkeypatch):
+def test_update_needed_match_no_upgrade(tmp_path, monkeypatch):
+    """When the *current* value matches the build-time timestamp no upgrade is needed."""
+
     env = {
         "ODOO_ADDONS_TIMESTAMP": "111",
     }
 
     ts_file = tmp_path / ".timestamp"
     ts_file.write_text("111", "utf-8")
-    monkeypatch.setattr(ep, "ADDON_TIMESTAMP_FILE", ts_file, raising=False)
+    import sys
+    monkeypatch.setattr(sys.modules["entrypoint.entrypoint"], "ADDON_TIMESTAMP_FILE", ts_file, raising=False)
 
-    # The helper currently returns *True* whenever an upgrade cycle is
-    # considered necessary – equality still leads to an upgrade to keep the
-    # logic simple on first implementation.
-    assert ep.update_needed(env) is True
+    assert ep.update_needed(env) is False
 
 
 def test_update_needed_mismatch(tmp_path, monkeypatch):
@@ -46,9 +50,36 @@ def test_update_needed_mismatch(tmp_path, monkeypatch):
 
     ts_file = tmp_path / ".timestamp"
     ts_file.write_text("333", "utf-8")
-    monkeypatch.setattr(ep, "ADDON_TIMESTAMP_FILE", ts_file, raising=False)
+    import sys
+    monkeypatch.setattr(sys.modules["entrypoint.entrypoint"], "ADDON_TIMESTAMP_FILE", ts_file, raising=False)
 
     assert ep.update_needed(env) is True
+
+
+# ---------------------------------------------------------------------------
+#  Additional edge-case: mechanism disabled when env variable missing/empty
+# ---------------------------------------------------------------------------
+
+
+def test_update_needed_disabled_when_env_empty(monkeypatch):
+    """An *empty* build-time timestamp must disable the upgrade mechanism."""
+
+    env = {
+        "ODOO_ADDONS_TIMESTAMP": " ",  # explicit blank value
+    }
+
+    # Even if the timestamp file is absent we expect *False* because the
+    # mechanism is considered disabled.
+
+    import sys
+    monkeypatch.setattr(
+        sys.modules["entrypoint.entrypoint"],
+        "ADDON_TIMESTAMP_FILE",
+        ep.ADDON_TIMESTAMP_FILE,
+        raising=False,
+    )
+
+    assert ep.update_needed(env) is False
 
 
 # ---------------------------------------------------------------------------
