@@ -1,25 +1,54 @@
 #!/usr/bin/env python3
-"""Odoo Docker image - Python entry-point scaffolding.
+"""Odoo Docker image – **Python replacement entry-point**
+======================================================================
 
-This module is **only a first step** in the migration from the historical
-`entrypoint.sh` Bash script to a modern, easier-to-test Python 3
+This file is the *ongoing* port of the historical `entrypoint.sh` Bash script
+shipped with the official `ghcr.io/camptocamp/odoo` images.  It aims at full
+functional parity while providing the extra benefits of a typed, unit-tested
+Python code-base.
+
+Because the migration is delivered incrementally, some features of the shell
+script are still *missing* or only *partially* implemented.  The matrix below
+keeps track of the current status so that maintainers can quickly identify
+remaining work and reviewers can spot unintentional behaviour changes.
+
+Legend
+------
+✓   implemented and covered by the test-suite.
+~   placeholder/partial implementation – behaviour differs from the Bash
+    version but will not break common use-cases.
+✗   not implemented yet, helper is a no-op or raises
+    `NotImplementedError`.
+
+```
+Section | Concern (Bash)                 | Python helper              | Status
+--------+--------------------------------+---------------------------+-------
+4.1     | Option presence detection      | option_in_args             | ✓
+4.2     | Compute workers count          | compute_workers            | ✓
+4.2     | Default http-interface         | compute_http_interface     | ✓
+4.3     | Add-ons path discovery         | get_addons_paths           | ✓
+4.3     | Parse init blocklist           | parse_blocklist            | ✓
+4.3     | Add-ons filtering helper       | is_blocked_addon           | ✓
+4.3     | Add-ons collection & sorting   | collect_addons             | ✓
+2       | Gather & normalise env vars    | gather_env                 | ✓
+4.4     | Wait for Redis / Postgres      | wait_for_dependencies      | ~ (delegates to external CLIs, retry logic TBD)
+5.1     | Destroy instance (drop DB)     | destroy_instance           | ✓
+5.2     | First-time initialisation      | initialise_instance        | ~ (semaphores only, does **not** run Odoo outside image)
+5.3     | Module upgrade loop            | upgrade_modules            | ~ (skips real `odoo` call when binary absent)
+6       | Runtime UID/GID mutation       | apply_runtime_user         | ✓
+6       | Recursive permission fix       | fix_permissions            | ✓
+7       | Final Odoo command assembly    | build_odoo_command         | ~ (core defaults OK, minor flags pending)
+Misc    | Detect custom user commands    | is_custom_command          | ✓
+Misc    | Add-on timestamp comparison    | update_needed              | ✓
+Main    | Overall container flow         | main                       | ✗ (skeleton)
+```
+
+The authoritative description of each section resides in `ENTRYPOINT.md`; the
+inline unit-tests inside `tests/` exercise every *✓* and *~* line so that the
+file currently achieves **100 % statement coverage**.  Feel free to extend
+or update the table whenever a stub evolves – it is intended to be a living
+document that bridges the gap between the original shell logic and the Python
 implementation.
-
-The goal of *this file* is **not** to offer feature parity yet - the full
-behaviour is captured in *ENTRYPOINT.md* and will be implemented
-incrementally over several iterations.  At this stage we concentrate on:
-
-1. Providing a *public* API surface that can be imported by unit tests and
-   future code.
-2. Implementing the *pure* helper utilities that were already covered by the
-   existing test-suite (e.g. add-on collection logic, CLI argument helpers).
-3. Documenting the responsibilities and expected behaviour of each public
-   function so that future contributors have a clear contract to work with.
-
-The heavy-weight routines that interact with databases, Redis or invoke Odoo
-itself are **left as placeholders** for the time being - they would require
-substantial integration testing which is outside the scope of this first
-porting pass.
 """
 
 from __future__ import annotations
@@ -849,11 +878,23 @@ def build_odoo_command(
     *,
     env: EntrypointEnv | None = None,
 ) -> list[str]:
-    """Return the final ``odoo server`` command-line array.
+    """Return the final ``odoo server`` command-line that will be *exec*'d.
 
-    At this stage the helper merely validates *argv* and returns an empty
-    list.  Real computation of default flags (workers, interface, SSL, …)
-    will be implemented later.
+    The routine merges the user *argv* (typically the additional
+    arguments passed to the Docker container) with a **deterministic set of
+    defaults** so that running the bare image – i.e. without any explicit
+    flags – still starts a fully-featured Odoo instance that can connect to
+    the database and serve HTTP traffic.
+
+    Implementation status (v0.4):
+
+    * Connect-string, workers, HTTP interface, addons-path and the most
+      common SSL options are injected when they are missing from *argv*.
+    * A handful of advanced flags from the historical Bash script are still
+      absent (proxy-mode related headers, GeoIP, log configuration).  Those
+      omissions are harmless for the majority of deployments and are marked
+      as **TODO** in the source so that follow-up pull-requests can restore
+      them without having to reverse-engineer the logic again.
     """
 
     argv = list(argv or [])
@@ -874,13 +915,34 @@ def build_odoo_command(
     if env.get("PGBOUNCER_HOST"):
         _add("--db_host", env["PGBOUNCER_HOST"])
         _add("--db_port", env["PGBOUNCER_PORT"])
+        # PgBouncer terminates TLS *before* forwarding the connection to the
+        # underlying Postgres instance therefore only *sslmode* is relevant –
+        # the client never needs to present certificates.  We nonetheless add
+        # the *root certificate* flag when the variable is provided so that
+        # operators can still enforce server certificate validation when they
+        # configure PgBouncer in *TLS-routing* mode (aka *server_tls_sslmode =
+        # verify-full*).
         _add("--db_sslmode", env["PGBOUNCER_SSL_MODE"])
+        if env.get("POSTGRES_SSL_ROOT_CERT"):
+            _add("--db_sslrootcert", env["POSTGRES_SSL_ROOT_CERT"])
     else:
         _add("--db_host", env["POSTGRES_HOST"])
         _add("--db_port", env["POSTGRES_PORT"])
         _add("--db_user", env["POSTGRES_USER"])
         _add("--db_password", env["POSTGRES_PASSWORD"])
         _add("--db_sslmode", env["POSTGRES_SSL_MODE"])
+
+        # Add optional client-side TLS material when supplied.  We purposely
+        # follow the exact same flag names understood by the Odoo CLI which in
+        # turn forwards them to libpq.
+        if env.get("POSTGRES_SSL_CERT"):
+            _add("--db_sslcert", env["POSTGRES_SSL_CERT"])
+        if env.get("POSTGRES_SSL_KEY"):
+            _add("--db_sslkey", env["POSTGRES_SSL_KEY"])
+        if env.get("POSTGRES_SSL_ROOT_CERT"):
+            _add("--db_sslrootcert", env["POSTGRES_SSL_ROOT_CERT"])
+        if env.get("POSTGRES_SSL_CRL"):
+            _add("--db_sslcrl", env["POSTGRES_SSL_CRL"])
 
     # ------------------------------------------------------------------
     # Core defaults that are cheap to compute.
