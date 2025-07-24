@@ -49,6 +49,29 @@ file currently achieves **100 % statement coverage**.  Feel free to extend
 or update the table whenever a stub evolves - it is intended to be a living
 document that bridges the gap between the original shell logic and the Python
 implementation.
+
+Pending functional gaps – to be addressed before production roll-out
+-------------------------------------------------------------------
+The Python port is feature-rich but **not yet a drop-in replacement** for the
+legacy shell script.  The following items still need work and are *deliberately*
+left out of scope for the current merge request:
+
+1. Restore flow (spec §5.2) – missing call to `/usr/local/sbin/restore` and
+   subsequent `odoo-regenerate-assets` execution.
+2. Redis locks (`initlead` / `upgradelead`) – acquisition & release via
+   `lock-handler` still absent, hence no cross-pod mutual exclusion.
+3. Automatic destroy on failed init/restore – only honours `.destroy`
+   semaphore at the moment.
+4. Runtime `odoo.conf` housekeeping (`odoo-config` master-password, Redis
+   section, etc.).
+5. Privilege drop – `gosu odoo …` (or equivalent `setuid`/`setgid`) removed,
+   resulting in Odoo running as *root* when the container starts under the
+   default `USER root` directive.
+6. `flock`-style guard around writes to `/etc/odoo/.timestamp`.
+7. Additional proxy/logging flags not yet injected by `build_odoo_command()`.
+
+Keep the list in sync as the gaps are closed; update both this section **and**
+the status table above accordingly.
 """
 
 from __future__ import annotations
