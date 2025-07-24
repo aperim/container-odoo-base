@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Odoo Docker image - Python entry-point scaffolding.
 
 This module is **only a first step** in the migration from the historical
