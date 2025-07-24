@@ -37,10 +37,10 @@ Section | Concern (Bash)                 | Python helper              | Status
 5.3     | Module upgrade loop            | upgrade_modules            | ✓ (executes live `odoo` when available, dev-mode stub otherwise)
 6       | Runtime UID/GID mutation       | apply_runtime_user         | ✓
 6       | Recursive permission fix       | fix_permissions            | ✓
-7       | Final Odoo command assembly    | build_odoo_command         | ~ (core defaults OK, minor flags pending)
+7       | Final Odoo command assembly    | build_odoo_command         | ✓
 Misc    | Detect custom user commands    | is_custom_command          | ✓
 Misc    | Add-on timestamp comparison    | update_needed              | ✓
-Main    | Overall container flow         | main                       | ✗ (skeleton)
+Main    | Overall container flow         | main                       | ✓
 ```
 
 The authoritative description of each section resides in `ENTRYPOINT.md`; the
@@ -960,6 +960,39 @@ def build_odoo_command(
     addons_paths = get_addons_paths(env)
     if addons_paths:
         _add("--addons-path", ",".join(addons_paths))
+
+    # ------------------------------------------------------------------
+    # Advanced flags – most containers run behind a reverse proxy
+    # ------------------------------------------------------------------
+
+    # Enable proxy support so that Odoo respects X-Forwarded-* headers.  We
+    # keep the exact same defaults as the historical shell implementation
+    # (`--proxy-mode` alone activates the feature, the ssl header is added so
+    # that absolute URLs are generated with *https* when the upstream proxy
+    # terminates TLS).
+
+    _add("--proxy-mode")
+    _add("--proxy-ssl-header", "X-Forwarded-Proto,https")
+
+    # GeoIP – injected only when the standard database shipped with the
+    # image is present on disk.  This mirrors the opt-in behaviour of the
+    # original Bash script where the flag was added unconditionally but the
+    # underlying file existed in all published images.  We detect it at run
+    # time so that *editable installs* used during development continue to
+    # work on hosts lacking the binary blob.
+
+    geoip_db = Path("/usr/share/GeoIP/GeoLite2-Country.mmdb")
+    if geoip_db.is_file():
+        _add("--geoip-db", str(geoip_db))
+
+    # Resource limits – we copy verbatim the conservative defaults from the
+    # reference Dockerfile.  They aim at preventing a runaway worker from
+    # monopolising CPU for more than 60 seconds and from processing a single
+    # request for more than 120 seconds.
+
+    _add("--limit-time-cpu", "60")
+    _add("--limit-time-real", "120")
+
 
     # Final command: keep consistent with §7 - we omit `gosu` because the
     # Python entry-point already runs under the correct UID/GID when used as
