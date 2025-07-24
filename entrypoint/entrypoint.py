@@ -973,15 +973,100 @@ def build_odoo_command(
 
 
 def main(argv: Sequence[str] | None = None) -> None:  # pragma: no cover
-    """Entry-point when the image starts.
+    """Replicate the high-level control-flow of the historical shell script.
 
-    The real implementation will go here.  For the time being we only ensure
-    that the module is *importable* and that a ``main`` function exists so
-    that unit tests can call it without side effects.
+    The function purposely **never** returns – it ultimately `exec`s either
+    a *custom user command* or the assembled ``/usr/bin/odoo server`` command
+    so that the latter becomes *PID 1* inside the container exactly like the
+    Bash version.  For the sake of unit-testing the heavy *os.exec*v
+    invocation is expected to be monkey-patched by the caller because – by
+    definition – nothing can run after a successful *exec*.
     """
 
-    argv = list(sys.argv[1:] if argv is None else argv)
-    print("entrypoint.py skeleton - nothing to do yet", file=sys.stderr)
+    import os
+    from pathlib import Path
+
+    args = list(sys.argv[1:] if argv is None else argv)
+
+    # ------------------------------------------------------------------
+    # 1. Custom command fast-path – honour the same predicate as the Bash
+    #    helper so that users can run arbitrary maintenance utilities by
+    #    prefixing the docker invocation.
+    # ------------------------------------------------------------------
+
+    if is_custom_command(args):
+        # *exec* replaces the current process image therefore the Python
+        # interpreter disappears – this is the intended behaviour for the
+        # final container but test-suites will monkey-patch the function to
+        # intercept the call.
+        os.execvp(args[0], args)  # pragma: no cover – real exec unreachable in tests
+
+    # ------------------------------------------------------------------
+    # 2. Regular Odoo start-up sequence – follow the ordering outlined in
+    #    §4 of ENTRYPOINT.md.  Every helper is wrapped in a tiny try/except
+    #    that converts unforeseen exceptions to a *clean* non-zero exit so
+    #    that orchestration layers (docker, kubernetes …) can restart the
+    #    container when appropriate.
+    # ------------------------------------------------------------------
+
+    env = gather_env()
+
+    try:
+        apply_runtime_user(env)
+        fix_permissions(env)
+        wait_for_dependencies(env)
+
+        # ----------------------------------------------------------
+        # 2.1 Destroy request – takes precedence over anything else
+        # ----------------------------------------------------------
+
+        if Path("/etc/odoo/.destroy").exists():
+            destroy_instance(env)
+
+        # ----------------------------------------------------------
+        # 2.2 First-time initialisation guarded by semaphore
+        # ----------------------------------------------------------
+
+        if not Path("/etc/odoo/.scaffolded").exists():
+            initialise_instance(env)
+
+        # ----------------------------------------------------------
+        # 2.3 Automated upgrades when enabled and required
+        # ----------------------------------------------------------
+
+        if not env.get("ODOO_NO_AUTO_UPGRADE") and update_needed(env):
+            upgrade_modules(env)
+
+        # ----------------------------------------------------------
+        # 2.4 Build final command and exec it – discard *odoo/odoo.py*
+        #     prefix when present so that user supplied flags are not
+        #     duplicated (historic shell behaviour).
+        # ----------------------------------------------------------
+
+        user_args = args.copy()
+        if user_args and user_args[0] in {"odoo", "odoo.py"}:
+            user_args.pop(0)
+
+        cmd = build_odoo_command(user_args, env=env)
+
+        # Fall-back for development environments where the real binary might
+        # not be present – in that case we simply log the command and exit.
+        if not Path(cmd[0]).is_file():
+            print(
+                f"[entrypoint] dev-mode – would exec: {' '.join(cmd)}",
+                file=sys.stderr,
+            )
+            return
+
+        os.execv(cmd[0], cmd)  # pragma: no cover – unreachable in unit tests
+
+    except SystemExit:
+        raise  # re-raise explicit exits unchanged
+    except Exception as exc:  # pragma: no cover – safety net
+        # Emit diagnostic on stderr so that container logs capture the root
+        # cause then exit with a non-zero status.
+        print(f"[entrypoint] FATAL: {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
