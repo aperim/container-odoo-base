@@ -39,14 +39,12 @@ __all__ = [
     "option_in_args",
     "is_blocked_addon",
     "collect_addons",
-    # high-level control-flow helpers (scaffolding only - *not* implemented)
     "gather_env",
     "wait_for_dependencies",
     "destroy_instance",
     "initialise_instance",
     "upgrade_modules",
     "build_odoo_command",
-    # additional scaffolding introduced in v0.2
     "is_custom_command",
     "apply_runtime_user",
     "fix_permissions",
@@ -57,11 +55,6 @@ __all__ = [
     "ADDON_TIMESTAMP_FILE",
     "SCAFFOLDED_SEMAPHORE",
 ]
-
-
-# ---------------------------------------------------------------------------
-#  Small pure helpers introduced in this iteration - fully implemented
-# ---------------------------------------------------------------------------
 
 
 def compute_workers(cpu_count: int | None = None) -> int:  # noqa: D401 - imperative mood
@@ -455,11 +448,6 @@ def gather_env(
         PUID=_get("PUID"),
         PGID=_get("PGID"),
     )
-
-
-# ---------------------------------------------------------------------------
-#  Control-flow scaffolding - currently raise *NotImplemented*
-# ---------------------------------------------------------------------------
 
 
 def wait_for_dependencies(env: EntrypointEnv | None = None) -> None:  # noqa: D401 - imperative mood
