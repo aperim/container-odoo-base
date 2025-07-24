@@ -25,10 +25,46 @@ import entrypoint as ep
         "initialise_instance",
         "upgrade_modules",
         "build_odoo_command",
+        # v0.2 additions
+        "is_custom_command",
+        "apply_runtime_user",
+        "fix_permissions",
+        "update_needed",
+        "compute_workers",
+        "compute_http_interface",
+        "get_addons_paths",
     ],
 )
 def test_symbol_present(name: str) -> None:
     assert hasattr(ep, name), f"{name} should be exported in __all__"
+
+
+# ---------------------------------------------------------------------------
+#  Newly added helpers in v0.2 – presence & basic behaviour
+# ---------------------------------------------------------------------------
+
+
+def test_is_custom_command_detection() -> None:
+    assert ep.is_custom_command(["bash"]) is True
+    assert ep.is_custom_command(["odoo"]) is False
+    assert ep.is_custom_command(["--log-level", "debug"]) is False
+
+
+def test_compute_workers_formula() -> None:
+    assert ep.compute_workers(1) == 1  # 2*1-1 = 1
+    assert ep.compute_workers(4) == 7  # 2*4-1 = 7
+
+
+def test_compute_http_interface() -> None:
+    assert ep.compute_http_interface(16) == "0.0.0.0"
+    assert ep.compute_http_interface(17) == "::"
+    # Garbage input defaults to legacy IPv4
+    assert ep.compute_http_interface("not-a-number") == "0.0.0.0"
+
+
+def test_get_addons_paths_returns_list() -> None:
+    paths = ep.get_addons_paths({})  # type: ignore[arg-type]
+    assert isinstance(paths, list)
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +91,8 @@ def test_gather_env_defaults() -> None:
         ep.destroy_instance,
         ep.initialise_instance,
         ep.upgrade_modules,
-        ep.build_odoo_command,
+        ep.apply_runtime_user,
+        ep.fix_permissions,
     ],
 )
 def test_placeholder_raises_not_implemented(func) -> None:  # type: ignore[no-any-unbound]
@@ -67,4 +104,3 @@ def test_placeholder_raises_not_implemented(func) -> None:  # type: ignore[no-an
             func()  # type: ignore[arg-type, call-arg]
         else:  # pragma: no cover – safeguard for future sig changes
             func()  # noqa: B018 – duplicate call intentional
-

@@ -43,12 +43,29 @@ __all__ = [
     "initialise_instance",
     "upgrade_modules",
     "build_odoo_command",
+    # additional scaffolding introduced in v0.2
+    "is_custom_command",
+    "apply_runtime_user",
+    "fix_permissions",
+    "update_needed",
+    "compute_workers",
+    "compute_http_interface",
+    "get_addons_paths",
+    "ADDON_TIMESTAMP_FILE",
 ]
 
 
 # ---------------------------------------------------------------------------
 #  Generic helpers – previously shell snippets, now Python functions
 # ---------------------------------------------------------------------------
+
+# Absolute path to the timestamp semaphore file written during initial
+# initialisation and checked on every boot to decide whether an **upgrade**
+# cycle is required.  Exposed as a *module level* constant so that unit-tests
+# can monkey-patch it easily without altering the real path used in
+# production.
+
+ADDON_TIMESTAMP_FILE = Path("/etc/odoo/.timestamp")
 
 
 def parse_blocklist(value: str | None) -> list[str]:
@@ -345,7 +362,74 @@ def wait_for_dependencies(env: EntrypointEnv | None = None) -> None:  # noqa: D4
     exact rules from sections 4.4 and 4.5 of *ENTRYPOINT.md*.
     """
 
-    raise NotImplementedError
+    # Delegates the *real* blocking logic to helper utilities that are already
+    # part of the image and – crucially – fully unit-tested on their own. By
+    # wrapping them we gain two advantages:
+    #
+    # 1. The entry-point keeps a *single* place where the dependency-readiness
+    #    logic is orchestrated which mirrors the historical Bash flow while
+    #    remaining straightforward to monkey-patch during unit tests.
+    # 2. We keep the surface small: tests can inject dummy callables through
+    #    `monkeypatch.setattr()` so that *no* network or Redis instance is
+    #    required.
+
+    env = gather_env(env)
+
+    # ------------------------------------------------------------------
+    # Wait for Redis – we do not forward any parameter because the helper
+    # reads *all* configuration from environment variables (REDIS_HOST …)
+    # which is consistent with the historical behaviour.
+    # ------------------------------------------------------------------
+
+    try:
+        from tools.src.lock_handler import wait_for_redis  # type: ignore
+
+        wait_for_redis()  # blocks until Redis replies to PING
+    except ModuleNotFoundError:  # pragma: no cover – missing optional dep
+        # The helper script may be absent from *editable installs* of the
+        # code-base (e.g. when we run the unit tests outside of the final
+        # Docker image).  Failing hard would make local development painful
+        # so we fall back to a *noop* implementation whilst emitting a clear
+        # diagnostic to *stderr*.
+        import sys
+
+        print(
+            "[entrypoint] tools.src.lock_handler.wait_for_redis unavailable, "
+            "skipping actual Redis wait (development mode)",
+            file=sys.stderr,
+        )
+
+    # ------------------------------------------------------------------
+    # Wait for PostgreSQL or PgBouncer – we pick the correct helper based on
+    # the same precedence rule as the shell script: if *PGBOUNCER_HOST* is
+    # non-empty we exclusively use the PgBouncer endpoint, otherwise we hit
+    # Postgres directly.
+    # ------------------------------------------------------------------
+
+    from tools.src import wait_for_postgres as _wfp  # type: ignore
+
+    if env.get("PGBOUNCER_HOST"):
+        _wfp.wait_for_pgbouncer(
+            user=env["POSTGRES_USER"],
+            password=env["POSTGRES_PASSWORD"],
+            host=env["PGBOUNCER_HOST"],
+            port=int(env["PGBOUNCER_PORT"]),
+            dbname=env["POSTGRES_DB"],
+            ssl_mode=env["PGBOUNCER_SSL_MODE"],
+        )
+    else:
+        _wfp.wait_for_postgres(
+            user=env["POSTGRES_USER"],
+            password=env["POSTGRES_PASSWORD"],
+            host=env["POSTGRES_HOST"],
+            port=int(env["POSTGRES_PORT"]),
+            dbname=env["POSTGRES_DB"],
+            ssl_mode=env["POSTGRES_SSL_MODE"],
+            ssl_cert=env.get("POSTGRES_SSL_CERT") or None,
+            ssl_key=env.get("POSTGRES_SSL_KEY") or None,
+            ssl_root_cert=env.get("POSTGRES_SSL_ROOT_CERT") or None,
+            ssl_crl=env.get("POSTGRES_SSL_CRL") or None,
+        )
 
 
 def destroy_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
@@ -385,7 +469,58 @@ def build_odoo_command(
     will be implemented later.
     """
 
-    raise NotImplementedError
+    argv = list(argv or [])
+
+    env = gather_env(env)
+
+    def _add(flag: str, *values: str) -> None:  # noqa: WPS430 – tiny helper
+        """Append *flag* and *values* if the flag is not already in *argv*."""
+
+        if option_in_args(flag, *argv):
+            return
+        argv.extend((flag, *values))
+
+    # ------------------------------------------------------------------
+    # Database connection parameters – PgBouncer takes precedence over PG.
+    # ------------------------------------------------------------------
+
+    if env.get("PGBOUNCER_HOST"):
+        _add("--db_host", env["PGBOUNCER_HOST"])
+        _add("--db_port", env["PGBOUNCER_PORT"])
+        _add("--db_sslmode", env["PGBOUNCER_SSL_MODE"])
+    else:
+        _add("--db_host", env["POSTGRES_HOST"])
+        _add("--db_port", env["POSTGRES_PORT"])
+        _add("--db_user", env["POSTGRES_USER"])
+        _add("--db_password", env["POSTGRES_PASSWORD"])
+        _add("--db_sslmode", env["POSTGRES_SSL_MODE"])
+
+    # ------------------------------------------------------------------
+    # Core defaults that are cheap to compute.
+    # ------------------------------------------------------------------
+
+    _add("--database", env["POSTGRES_DB"])
+    _add("--unaccent")
+
+    import os
+
+    _add("--workers", str(compute_workers(os.cpu_count())))
+    _add("--http-interface", compute_http_interface(os.getenv("ODOO_MAJOR_VERSION", "0")))
+    _add("--config", "/etc/odoo/odoo.conf")
+
+    addons_paths = get_addons_paths(env)
+    if addons_paths:
+        _add("--addons-path", ",".join(addons_paths))
+
+    # Final command: keep consistent with §7 – we omit `gosu` because the
+    # Python entry-point already runs under the correct UID/GID when used as
+    # PID 1 inside the image.  Adding it would complicate unit-testing.
+
+    return [
+        "/usr/bin/odoo",
+        "server",
+        *argv,
+    ]
 
 
 def main(argv: Sequence[str] | None = None) -> None:  # pragma: no cover
@@ -398,6 +533,135 @@ def main(argv: Sequence[str] | None = None) -> None:  # pragma: no cover
 
     argv = list(sys.argv[1:] if argv is None else argv)
     print("entrypoint.py skeleton – nothing to do yet", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+#  Newly added scaffolding helpers – v0.2
+# ---------------------------------------------------------------------------
+
+
+def is_custom_command(argv: Sequence[str] | None = None) -> bool:  # noqa: D401 – imperative mood
+    """Return *True* when the CLI *argv* indicates a **user provided command**.
+
+    The historical Bash script delegated *any* first argument that was **not**
+    recognised as one of the three Odoo variants (`odoo`, `odoo.py`) or a
+    long option beginning with ``--``.
+
+    This helper encapsulates that predicate so that both :pyfunc:`main` and
+    the test-suite can share the exact same logic.
+    """
+
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv:
+        return False  # `docker run image` with no extra args → not custom
+
+    first = argv[0]
+    if first.startswith("--"):
+        return False
+    return first not in {"odoo", "odoo.py"}
+
+
+def apply_runtime_user(env: EntrypointEnv | None = None) -> None:  # noqa: D401
+    """Change UID/GID of user *odoo* inside the container.
+
+    Implementation will rely on *os*, *pwd*, *grp* and *subprocess* to call
+    `usermod` / `groupmod`.  Left as **stub** for now.
+    """
+
+    raise NotImplementedError
+
+
+def fix_permissions(env: EntrypointEnv | None = None) -> None:  # noqa: D401
+    """Recursively chown mutable paths to *odoo:odoo*.
+
+    Behaviour will mimic the Bash implementation – resolving symlinks and
+    skipping when the target already points to the read-only image layers.
+    """
+
+    raise NotImplementedError
+
+
+def update_needed(env: EntrypointEnv | None = None) -> bool:  # noqa: D401
+    """Return *True* when the build-time timestamp differs from the stored one.
+
+    Behaviour follows §5.3 of *ENTRYPOINT.md*:
+
+    1. When the *build-time* value (``$ODOO_ADDONS_TIMESTAMP``) is **missing
+       or empty** → upgrades are disabled and the helper returns *False*.
+    2. If the timestamp file is **absent** the container was never fully
+       initialised therefore an upgrade is required (returns *True*).
+    3. Otherwise, compare the *string* value from the environment to the file
+       contents (stripped).  Any mismatch triggers an upgrade cycle.
+    """
+
+    env = gather_env(env)
+
+    build_time = env.get("ODOO_ADDONS_TIMESTAMP", "")
+    if not build_time:
+        return False
+
+    try:
+        current = ADDON_TIMESTAMP_FILE.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return True
+
+    return current != build_time.strip()
+
+
+# ---------------------------------------------------------------------------
+#  Pure helpers with *real* implementation – easy unit-test wins
+# ---------------------------------------------------------------------------
+
+
+def compute_workers(cpu_count: int | None = None) -> int:
+    """Compute the *workers* flag using formula ``2 × CPU − 1``.
+
+    When *cpu_count* is not provided the helper falls back to
+    :pyfunc:`os.cpu_count` (guaranteed to be **≥1** because Docker cgroups
+    expose at least one CPU).
+    """
+
+    import os
+
+    cpus = cpu_count if cpu_count is not None else os.cpu_count() or 1
+    # Bound the result to at least **1** to avoid passing *zero* to Odoo.
+    return max(1, (2 * cpus) - 1)
+
+
+def compute_http_interface(odoo_version: int | str | None = None) -> str:
+    """Return listening interface based on *odoo_version*.
+
+    * ``::``   for version **≥17** (dual-stack IPv6 / IPv4-mapped)
+    * ``0.0.0.0`` for any lower version or when the value cannot be parsed.
+    """
+
+    try:
+        ver = int(odoo_version) if odoo_version is not None else 0
+    except (ValueError, TypeError):  # pragma: no cover – defensive fallback
+        ver = 0
+    return "::" if ver >= 17 else "0.0.0.0"
+
+
+def get_addons_paths(env: EntrypointEnv | None = None) -> list[str]:  # noqa: D401
+    """Return the **ordered** list of directories passed to ``--addons-path``.
+
+    The real implementation will honour community/enterprise/extras and
+    mounted paths.  For the time being an *empty* list is returned so that
+    callers have a well-defined type with no side-effects.
+    """
+
+    # Resolve directories in the **exact** order expected by Odoo so that the
+    # first match wins when duplicate module names exist across distributions.
+
+    base_dirs = [
+        Path("/opt/odoo/enterprise"),  # enterprise overrides community
+        Path("/opt/odoo/community"),
+        Path("/opt/odoo/extras"),
+        Path("/mnt/addons"),  # user-mounted path – last so it can override
+    ]
+
+    return [str(p) for p in base_dirs if p.is_dir()]
+
 
 
 if __name__ == "__main__":  # pragma: no cover
