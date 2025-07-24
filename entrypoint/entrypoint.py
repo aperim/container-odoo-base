@@ -31,10 +31,10 @@ Section | Concern (Bash)                 | Python helper              | Status
 4.3     | Add-ons filtering helper       | is_blocked_addon           | ✓
 4.3     | Add-ons collection & sorting   | collect_addons             | ✓
 2       | Gather & normalise env vars    | gather_env                 | ✓
-4.4     | Wait for Redis / Postgres      | wait_for_dependencies      | ~ (delegates to external CLIs, retry logic TBD)
+4.4     | Wait for Redis / Postgres      | wait_for_dependencies      | ✓ (delegates to helper CLIs – skips in dev mode)
 5.1     | Destroy instance (drop DB)     | destroy_instance           | ✓
-5.2     | First-time initialisation      | initialise_instance        | ~ (semaphores only, does **not** run Odoo outside image)
-5.3     | Module upgrade loop            | upgrade_modules            | ~ (skips real `odoo` call when binary absent)
+5.2     | First-time initialisation      | initialise_instance        | ~ (semaphores & manifest dump only, no live Odoo run)
+5.3     | Module upgrade loop            | upgrade_modules            | ✓ (executes live `odoo` when available, dev-mode stub otherwise)
 6       | Runtime UID/GID mutation       | apply_runtime_user         | ✓
 6       | Recursive permission fix       | fix_permissions            | ✓
 7       | Final Odoo command assembly    | build_odoo_command         | ~ (core defaults OK, minor flags pending)
