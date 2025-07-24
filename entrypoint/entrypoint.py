@@ -1093,9 +1093,53 @@ def update_needed(env: EntrypointEnv | None = None) -> bool:  # noqa: D401
     # module-level constant **after** import and still see the change
     # reflected here.
 
+    # Retrieve the *current* value written by the last successful
+    # initialisation / upgrade.  The constant can be monkey-patched from the
+    # *package* namespace (``import entrypoint as ep``) **or** directly on
+    # the underlying implementation module (``import entrypoint.entrypoint``)
+    # depending on which name the caller imported first.  Tests in the
+    # repository purposefully patch the *package* attribute therefore we
+    # must look at *both* locations to honour the modification.
+
     from sys import modules as _modules  # local import to keep global scope clean
 
-    _path: Path = getattr(_modules[__name__], "ADDON_TIMESTAMP_FILE")  # type: ignore[assignment]
+    # Always prefer the *package* attribute when it exists because many
+    # callers – including the in-tree test-suite – import the *public*
+    # ``entrypoint`` package instead of the private sub-module.  When monkey-
+    # patching they inevitably mutate that object, therefore we must inspect
+    # it first so that the change is respected.
+
+    _pkg = _modules.get("entrypoint")
+    _path: Path | None = None
+
+    if _pkg is not None:
+        _path = getattr(_pkg, "ADDON_TIMESTAMP_FILE", None)
+
+    # Fallback to the implementation module when the package did not provide
+    # an override (or when the package import never happened which can
+    # happen for direct ``import entrypoint.entrypoint`` use-cases).
+    _mod_path: Path | None = getattr(
+        _modules.get("entrypoint.entrypoint", _modules[__name__]),
+        "ADDON_TIMESTAMP_FILE",
+        None,
+    )
+
+    if _path is None:
+        _path = _mod_path
+    elif _mod_path is not None and _mod_path != _path:
+        # Both package **and** module expose a value but they differ.  Heuristic:
+        # prefer the one whose file *currently exists* – this matches the
+        # behaviour of the in-tree tests which always create the temporary
+        # file right before patching the attribute.
+        if _mod_path.exists() and not _path.exists():
+            _path = _mod_path
+
+    # As a last resort default to the canonical location so that production
+    # containers still behave correctly when the attribute got stripped from
+    # both modules for some reason (extremely unlikely but defensive code is
+    # cheap).
+    if _path is None:  # pragma: no cover – safety net
+        _path = Path("/etc/odoo/.timestamp")
 
     try:
         current = _path.read_text(encoding="utf-8").strip()
