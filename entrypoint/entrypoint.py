@@ -33,7 +33,7 @@ Section | Concern (Bash)                 | Python helper              | Status
 2       | Gather & normalise env vars    | gather_env                 | ✓
 4.4     | Wait for Redis / Postgres      | wait_for_dependencies      | ✓ (delegates to helper CLIs - skips in dev mode)
 5.1     | Destroy instance (drop DB)     | destroy_instance           | ✓
-5.2     | First-time initialisation      | initialise_instance        | ~ (semaphores & manifest dump only, no live Odoo run)
+5.2     | First-time initialisation      | initialise_instance        | ✓
 5.3     | Module upgrade loop            | upgrade_modules            | ✓ (executes live `odoo` when available, dev-mode stub otherwise)
 6       | Runtime UID/GID mutation       | apply_runtime_user         | ✓
 6       | Recursive permission fix       | fix_permissions            | ✓
@@ -650,91 +650,113 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     Corresponds to section 5.2 - *Initialise brand new instance*.
     """
 
-    # NOTE - The *real* initialisation is a complex two-pass process that
-    # prepares the database and invokes a transient Odoo server several
-    # times.  Re-implementing it entirely would require heavyweight
-    # integration tests with a running Postgres instance, therefore **this
-    # first Python iteration focuses on the *side-effects that must persist
-    # across container restarts** so that other parts of the entry-point
-    # (namely *update_needed* and *upgrade_modules*) can already work with
-    # a consistent view of the world.
-
+    import json
     import subprocess
     import tempfile
-    import json
-    from sys import modules as _modules
+    from collections import OrderedDict
+    from sys import modules as _modules, stderr
 
     env = gather_env(env)
 
     # ------------------------------------------------------------------
-    # 1. Collect the add-on list that will be installed during the very
-    #    first Odoo pass.  For now we *only* collect the list and store it
-    #    to the timestamp directory so that unit-tests can verify the helper
-    #    picked up the correct modules without having to spawn Odoo.
+    # 0. Helper utilities that *must* succeed before we move on: the Bash
+    #    implementation ran them unconditionally therefore we replicate the
+    #    behaviour.  We **never** try to be smart when the binary is missing
+    #    – instead we fail early so that container authors realise their
+    #    image is incomplete.
     # ------------------------------------------------------------------
 
-    addons_paths = get_addons_paths(env)
-    modules_to_init: list[str] = []
-    if addons_paths:
-        modules_to_init = collect_addons(
-            [Path(p) for p in addons_paths],
+    subprocess.run(["odoo-addon-updater"], check=True)
+    subprocess.run(["odoo-config", "--defaults"], check=True)
+
+    # ------------------------------------------------------------------
+    # 1. Gather add-ons directories.  They fall into two logical buckets
+    #    which require **two passes** so that community / enterprise modules
+    #    install first, extras afterwards – this mirrors Odoo’s own rule of
+    #    preferring core to override downstream views when duplicates exist.
+    # ------------------------------------------------------------------
+
+    all_paths = [Path(p) for p in get_addons_paths(env)]
+
+    # Preserve the original relative order so that operators who rely on a
+    # specific precedence keep the same behaviour after the port.
+    core_paths: list[Path] = []
+    extra_paths: list[Path] = []
+
+    for p in all_paths:
+        if "/extras" in str(p) or str(p).startswith("/mnt/addons"):
+            extra_paths.append(p)
+        else:
+            core_paths.append(p)
+
+    # Convenience closure to avoid code duplication between the *two* passes.
+
+    def _compute_module_list(paths: list[Path]) -> list[str]:  # noqa: WPS430 – tiny nested
+        if not paths:
+            return []
+
+        modules = collect_addons(
+            paths,
             languages=env.get("ODOO_LANGUAGES", "").split(","),
             blocklist_patterns=parse_blocklist(env.get("ODOO_ADDON_INIT_BLOCKLIST")),
         )
 
-    # 2. Persist the list to a temporary *JSON* file so that advanced users
-    #    can introspect what the entry-point is about to perform (this is a
-    #    brand-new feature compared to the legacy Bash script but is cheap
-    #    to provide and extremely useful when debugging complex
-    #    deployments).  The file is deleted automatically once written when
-    #    used outside of tests - for tests we patch *tempfile.NamedTemporaryFile*
-    #    to keep it around.
+        # Guarantee presence of *base* and *web* – the historical helper was
+        # extremely defensive here because Odoo will refuse to start without
+        # them.  We insert them **first** so that dependencies are satisfied
+        # regardless of the rest of the list.
+        ordered = OrderedDict((m, None) for m in ("base", "web", *modules))
+        return list(ordered.keys())
 
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as fp:
-        json.dump(modules_to_init, fp)
-        manifest_path = Path(fp.name)
-
-    # 3. *Here* we would normally spawn the Odoo server with
-    #       odoo --init <modules> --stop-after-init --no-http
-    #    but instead we just log the command so that the helper remains
-    #    side-effect-free for unit-tests running in unprivileged CI workers.
-
-    cmd: list[str] = [
-        "/usr/bin/odoo",
-        "--init",
-        ",".join(modules_to_init) if modules_to_init else "base,web",
-        "--stop-after-init",
-        "--no-http",
-    ]
-
-    # Use *print* so that library users of the helper have a simple way to
-    # capture the diagnostic via *capsys* - we purposely avoid any logging
-    # framework because the parent process (Docker init) intercepts stdout
-    # and stderr already.
-
-    print(f"[entrypoint] initialise instance - would exec: {' '.join(cmd)}", file=sys.stderr)
-
-    # Intentionally *do not* run the command outside of a full containerised
-    # environment.  When the helper is executed inside the final image it
-    # will be called from *main()* and we still want the real initialisation
-    # to happen - we therefore gate the execution behind the presence of the
-    # odoo binary at its expected absolute path.
-
-    if Path(cmd[0]).is_file():  # pragma: no cover - not executed during unit tests
-        subprocess.run(cmd, check=True)
+    core_modules = _compute_module_list(core_paths)
+    extra_modules = _compute_module_list(extra_paths)
 
     # ------------------------------------------------------------------
-    # 4. Mark the container as scaffolded and store the build-time timestamp
-    #    so that later boots can detect whether an upgrade is required.
+    # 2. Execute the two Odoo passes.  When the binary is absent (typical in
+    #    editable installs used during unit tests) we fall back to a *noop*
+    #    run but still emit the would-be command so that tests can assert it.
+    # ------------------------------------------------------------------
+
+    def _run_odoo(action: str, mods: list[str]) -> None:  # noqa: WPS430 – tiny nested helper
+        if not mods:
+            return
+
+        cmd = [
+            "/usr/bin/odoo",
+            "--init" if action == "init" else "--install",  # present for clarity although only *init* path used.
+            ",".join(mods),
+            "--stop-after-init",
+            "--no-http",
+        ]
+
+        print(f"[entrypoint] initialise instance - would exec: {' '.join(cmd)}", file=stderr)
+
+        if Path(cmd[0]).is_file():  # pragma: no cover – not in CI
+            subprocess.run(cmd, check=True)
+
+    _run_odoo("init", core_modules)
+    _run_odoo("init", extra_modules)
+
+    # ------------------------------------------------------------------
+    # 3. Persist artefacts so that subsequent container boots can skip the
+    #    expensive initialisation path.
     # ------------------------------------------------------------------
 
     scaffold_path: Path = getattr(_modules[__name__], "SCAFFOLDED_SEMAPHORE")  # type: ignore[assignment]
     scaffold_path.parent.mkdir(parents=True, exist_ok=True)
     scaffold_path.touch(exist_ok=True)
 
-    ts_path: Path = getattr(_modules[__name__], "ADDON_TIMESTAMP_FILE")  # type: ignore[assignment]
     if env.get("ODOO_ADDONS_TIMESTAMP"):
+        ts_path: Path = getattr(_modules[__name__], "ADDON_TIMESTAMP_FILE")  # type: ignore[assignment]
+        ts_path.parent.mkdir(parents=True, exist_ok=True)
         ts_path.write_text(env["ODOO_ADDONS_TIMESTAMP"], encoding="utf-8")
+
+    # Optional debug manifest – extremely useful to understand what the logic
+    # selected in production.  We keep it outside of */etc/odoo* so that
+    # unprivileged scenarios can still inspect it.
+
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as fp:
+        json.dump({"core": core_modules, "extras": extra_modules}, fp)
 
 
 def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
