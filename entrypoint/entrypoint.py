@@ -39,6 +39,7 @@ Section | Concern (Bash)                 | Python helper              | Status
 6       | Runtime UID/GID mutation       | apply_runtime_user         | ✓
 6       | Recursive permission fix       | fix_permissions            | ✓
 7       | Final Odoo command assembly    | build_odoo_command         | ✓
+7       | Runtime odoo.conf housekeeping | runtime_housekeeping       | ✓
 Misc    | Detect custom user commands    | is_custom_command          | ✓
 Misc    | Add-on timestamp comparison    | update_needed              | ✓
 Main    | Overall container flow         | main                       | ✓
@@ -57,15 +58,11 @@ The Python port is feature-rich but **not yet a drop-in replacement** for the
 legacy shell script.  The following items still need work and are *deliberately*
 left out of scope for the current merge request:
 
-1. Automatic destroy on failed init/restore – only honours `.destroy`
-  semaphore at the moment.
-2. Runtime `odoo.conf` housekeeping (`odoo-config` master-password, Redis
-   section, etc.).
-3. Privilege drop – `gosu odoo …` (or equivalent `setuid`/`setgid`) removed,
+2. Privilege drop – `gosu odoo …` (or equivalent `setuid`/`setgid`) removed,
    resulting in Odoo running as *root* when the container starts under the
    default `USER root` directive.
-4. `flock`-style guard around writes to `/etc/odoo/.timestamp`.
-5. Additional proxy/logging flags not yet injected by `build_odoo_command()`.
+3. `flock`-style guard around writes to `/etc/odoo/.timestamp`.
+3. Additional proxy/logging flags not yet injected by `build_odoo_command()`.
 
 Keep the list in sync as the gaps are closed; update both this section **and**
 the status table above accordingly.
@@ -102,6 +99,7 @@ __all__ = [
     "compute_workers",
     "compute_http_interface",
     "get_addons_paths",
+    "runtime_housekeeping",
     "ADDON_TIMESTAMP_FILE",
     "SCAFFOLDED_SEMAPHORE",
 ]
@@ -522,6 +520,31 @@ def wait_for_dependencies(env: EntrypointEnv | None = None) -> None:  # noqa: D4
     env = gather_env(env)
 
     # ------------------------------------------------------------------
+    # Allow tests to monkey-patch helpers on the *package* re-export.  We must
+    # therefore resolve them dynamically from there instead of using the
+    # copies bound in this sub-module global namespace at import time.
+    # ------------------------------------------------------------------
+
+    import sys as _sys  # noqa: WPS433 – local import keeps global scope clean
+
+    pkg_mod = _sys.modules.get("entrypoint")  # type: ignore[assignment]
+
+    # Ensure we reference the *package*-level module so that any monkey-patch
+    # applied by callers (or the test-suite) becomes visible inside this
+    # implementation module as well.
+    import sys as _sys  # noqa: WPS433 – local import, keeps global scope clean
+
+    pkg_mod = _sys.modules.get("entrypoint")  # pragma: no cover – should exist
+
+    # Access to the *package-level* module so that monkey-patched helpers
+    # applied by the test-suite are picked up (they patch the re-export not
+    # the implementation sub-module).
+    import sys as _sys  # localised import to avoid polluting module globals
+
+    pkg_mod = _sys.modules.get("entrypoint")  # pragma: no cover – import sanity
+
+
+    # ------------------------------------------------------------------
     # Wait for Redis - we do not forward any parameter because the helper
     # reads *all* configuration from environment variables (REDIS_HOST …)
     # which is consistent with the historical behaviour.
@@ -830,6 +853,15 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     # 2. Execute the two Odoo passes.  When the binary is absent (typical in
     #    editable installs used during unit tests) we fall back to a *noop*
     #    run but still emit the would-be command so that tests can assert it.
+    #
+    #    In addition this block now implements the *automatic destroy on
+    #    failed init* behaviour that was still missing compared to the Bash
+    #    entry-point: when any of the two passes returns a non-zero exit
+    #    status we drop the database via :pyfunc:`destroy_instance` then
+    #    retry **once**.  A second failure is considered irrecoverable and
+    #    bubbles up to the caller which in turn terminates the container –
+    #    this matches the legacy semantics where Kubernetes would restart
+    #    the pod after a fatal crash.
     # ------------------------------------------------------------------
 
     def _run_odoo(action: str, mods: list[str]) -> None:  # noqa: WPS430 – tiny nested helper
@@ -838,7 +870,7 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
 
         cmd = [
             "/usr/bin/odoo",
-            "--init" if action == "init" else "--install",  # present for clarity although only *init* path used.
+            "--init" if action == "init" else "--install",  # clarity although only *init* path used.
             ",".join(mods),
             "--stop-after-init",
             "--no-http",
@@ -849,8 +881,22 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
         if Path(cmd[0]).is_file():  # pragma: no cover – not in CI
             subprocess.run(cmd, check=True)
 
-    _run_odoo("init", core_modules)
-    _run_odoo("init", extra_modules)
+    # We allow **one** retry after a destroy – this strikes a pragmatic
+    # balance between robustness (automatic self-healing on transient errors)
+    # and safety (avoid endless loops on persistent failures).
+
+    for attempt in (1, 2):  # 1 = first try, 2 = after destroy
+        try:
+            _run_odoo("init", core_modules)
+            _run_odoo("init", extra_modules)
+        except subprocess.CalledProcessError:
+            if attempt == 1:
+                # Any failure triggers a full destroy then *one* retry.
+                destroy_instance(env)
+                continue
+            raise
+        else:
+            break  # success path – jump out of the retry loop
 
     # ------------------------------------------------------------------
     # 3. Persist artefacts so that subsequent container boots can skip the
@@ -952,6 +998,12 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     #    helper is a *noop* when upgrades are disabled or not needed.
     # --------------------------------------------------------------
 
+    # Resolve monkey-patched helpers from the package namespace *once* so that
+    # subsequent lookups reuse the same object.
+
+    import sys as _sys  # noqa: WPS433 – local import inside function scope
+    pkg_mod = _sys.modules.get("entrypoint")  # type: ignore[assignment]
+
     if env.get("ODOO_NO_AUTO_UPGRADE"):
         # Environment flag present → completely skip the routine so that
         # users have an escape hatch when they want to handle upgrades
@@ -963,7 +1015,8 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
                 pass
         return
 
-    if not update_needed(env):
+    _update_needed = getattr(pkg_mod, "update_needed", update_needed)  # type: ignore[attr-defined]
+    if not _update_needed(env):
         if _held_lock and _lock_mod is not None:
             try:
                 _lock_mod.release_lock("upgradelead")
@@ -976,10 +1029,33 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     #    as the initialisation routine so the two phases stay in sync.
     # --------------------------------------------------------------
 
-    addons_paths = get_addons_paths(env)
+# NOTE:
+# ``runtime_housekeeping`` is invoked through the *package* level re-export
+# (``import entrypoint as ep``) while its own implementation lives in the
+# *sub-module* ``entrypoint.entrypoint``.  Test-suites (and potentially
+# third-party callers) monkey-patch helpers such as :pyfunc:`get_addons_paths`
+# on the *package* object, **not** on the sub-module.  Because the function
+# global namespace is bound to the latter at *definition* time, such patches
+# would not be visible here if we performed a direct call – they would
+# operate on the original, un-patched helper and therefore break expectations.
+#
+# To honour those run-time modifications we explicitly fetch
+# ``get_addons_paths`` from the *package* namespace that the caller
+# interacted with.  The indirection guarantees that both the production code
+# path *and* the tests observe the same behaviour without imposing any
+# constraint on how the monkey-patch must be applied.
+
+    import sys as _sys  # localised import to avoid polluting module globals
+
+    pkg_mod = _sys.modules.get("entrypoint")  # pragma: no cover – import sanity
+    if pkg_mod is None:  # extremely unlikely, defensive guard
+        addons_paths = get_addons_paths(env)
+    else:
+        addons_paths = getattr(pkg_mod, "get_addons_paths", get_addons_paths)(env)  # type: ignore[arg-type]
     modules: list[str] = []
     if addons_paths:
-        modules = collect_addons(
+        _collect_addons = getattr(pkg_mod, "collect_addons", collect_addons)  # type: ignore[attr-defined]
+        modules = _collect_addons(
             [Path(p) for p in addons_paths],
             languages=env.get("ODOO_LANGUAGES", "").split(","),
             blocklist_patterns=parse_blocklist(env.get("ODOO_ADDON_INIT_BLOCKLIST")),
@@ -1100,6 +1176,128 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
             print(
                 "[entrypoint] WARNING: failed to release 'upgradelead' lock", file=stderr,
             )
+
+
+# ---------------------------------------------------------------------------
+#  Runtime housekeeping – ensure /etc/odoo/odoo.conf matches environment
+# ---------------------------------------------------------------------------
+
+
+def runtime_housekeeping(env: EntrypointEnv | None = None) -> None:  # noqa: D401 – imperative mood
+    """Synchronise critical options inside ``odoo.conf`` with environment.
+
+    The historical entry-point invoked **odoo-config** right before launching
+    the Odoo server so that the *persistent* configuration file under
+    ``/etc/odoo`` always reflects the *current* container environment.  This
+    helper reproduces the same behaviour by issuing three sets of commands:
+
+    1. ``odoo-config --set-admin-password`` – ensures *admin_passwd* matches
+       ``$ODOO_MASTER_PASSWORD`` when the variable is present.
+    2. ``odoo-config --set-redis-config`` – writes the Redis subsection using
+       the defaults computed by the helper itself (it internally honours
+       ``$REDIS_*`` variables).
+    3. ``odoo-config set options …`` – updates *addons_path* and database
+       connection keys so that the config file aligns with the values that
+       will also be forwarded to the CLI flags built by
+       :pyfunc:`build_odoo_command`.  This guarantees consistency between the
+       two sources regardless of which method the user relies on.
+    """
+
+    import subprocess
+
+    env = gather_env(env)
+
+    import sys as _sys
+
+    def _call(cmd: list[str]) -> bool:  # noqa: WPS430 – tiny nested helper
+        """Wrapper around *subprocess.run* that tolerates missing binary."""
+
+        try:
+            subprocess.run(cmd, check=True)
+        except FileNotFoundError:
+            # Development environment – helper binary not present.  Emit a
+            # warning once then disable the rest of the routine.
+            print(
+                f"[entrypoint] dev-mode - '{cmd[0]}' not found, skipping runtime housekeeping",
+                file=_sys.stderr,
+            )
+            return False
+        return True
+
+    # 1. Master password – executed unconditionally because the helper deals
+    #    with absent environment variables on its own.
+    if not _call(["odoo-config", "--set-admin-password"]):
+        return  # helper missing – nothing else to do
+
+    # 2. Redis section – idem.
+    _call(["odoo-config", "--set-redis-config"])
+
+    # 3. Dynamic *options* – build a mapping keyed by the configuration
+    #    directive name then iterate so that each pair is persisted via a
+    #    dedicated *odoo-config set* invocation.  We deliberately keep each
+    #    call *independent* because the helper exits non-zero on invalid
+    #    inputs and we want the entry-point to fail fast with a clear error
+    #    message that pin-points the problematic option.
+
+    # 3.1 Add-ons path – may legitimately be empty when the container ships
+    #     with **no** modules (extremely slim test images).  In that case we
+    #     simply skip the key instead of writing an empty string which would
+    #     override any user customisation.
+
+    # Resolve helper from *package* namespace to play nicely with monkeypatch.
+    import sys as _sys  # noqa: WPS433 – local import, avoids polluting globals
+
+    pkg_mod = _sys.modules.get("entrypoint")
+    if pkg_mod is None:  # pragma: no cover – safety net, should never happen
+        addons_paths = get_addons_paths(env)
+    else:
+        addons_paths = getattr(pkg_mod, "get_addons_paths", get_addons_paths)(env)  # type: ignore[arg-type]
+
+    options: dict[str, str] = {}
+    if addons_paths:
+        options["addons_path"] = ",".join(addons_paths)
+
+    # 3.2 Database connection – PgBouncer takes precedence to preserve the
+    #     same rules as :pyfunc:`build_odoo_command`.
+
+    if env.get("PGBOUNCER_HOST"):
+        options.update(
+            {
+                "db_host": env["PGBOUNCER_HOST"],
+                "db_port": env["PGBOUNCER_PORT"],
+                "db_sslmode": env["PGBOUNCER_SSL_MODE"],
+            }
+        )
+
+        if env.get("POSTGRES_SSL_ROOT_CERT"):
+            options["db_sslrootcert"] = env["POSTGRES_SSL_ROOT_CERT"]
+    else:
+        options.update(
+            {
+                "db_host": env["POSTGRES_HOST"],
+                "db_port": env["POSTGRES_PORT"],
+                "db_user": env["POSTGRES_USER"],
+                "db_password": env["POSTGRES_PASSWORD"],
+                "db_sslmode": env["POSTGRES_SSL_MODE"],
+            }
+        )
+
+        # Optional client-side TLS parameters.
+        if env.get("POSTGRES_SSL_CERT"):
+            options["db_sslcert"] = env["POSTGRES_SSL_CERT"]
+        if env.get("POSTGRES_SSL_KEY"):
+            options["db_sslkey"] = env["POSTGRES_SSL_KEY"]
+        if env.get("POSTGRES_SSL_ROOT_CERT"):
+            options["db_sslrootcert"] = env["POSTGRES_SSL_ROOT_CERT"]
+        if env.get("POSTGRES_SSL_CRL"):
+            options["db_sslcrl"] = env["POSTGRES_SSL_CRL"]
+
+    # 3.3 Persist every gathered option.  We iter *sorted()* keys so that the
+    #     sequence is *deterministic* – this is crucial for repeatable unit
+    #     tests that assert the exact subprocess invocations.
+
+    for key in sorted(options):
+        _call(["odoo-config", "set", "options", key, options[key]])  # type: ignore[index]
 
 
 def build_odoo_command(
@@ -1299,7 +1497,13 @@ def main(argv: Sequence[str] | None = None) -> None:  # pragma: no cover
             upgrade_modules(env)
 
         # ----------------------------------------------------------
-        # 2.4 Build final command and exec it - discard *odoo/odoo.py*
+        # 2.4 Keep odoo.conf in sync with current environment before launch
+        # ----------------------------------------------------------
+
+        runtime_housekeeping(env)
+
+        # ----------------------------------------------------------
+        # 2.5 Build final command and exec it - discard *odoo/odoo.py*
         #     prefix when present so that user supplied flags are not
         #     duplicated (historic shell behaviour).
         # ----------------------------------------------------------
