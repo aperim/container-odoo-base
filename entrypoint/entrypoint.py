@@ -57,20 +57,15 @@ The Python port is feature-rich but **not yet a drop-in replacement** for the
 legacy shell script.  The following items still need work and are *deliberately*
 left out of scope for the current merge request:
 
-1. ~~Restore flow (spec §5.2) – missing call to `/usr/local/sbin/restore` and
-   subsequent `odoo-regenerate-assets` execution.~~  **Implemented in v0.5** –
-   `initialise_instance()` now detects and runs the helper when available,
-   falls back to the regular brand-new database creation otherwise and honours
-   the destroy-on-failure semantics from the legacy script.
-2. Automatic destroy on failed init/restore – only honours `.destroy`
+1. Automatic destroy on failed init/restore – only honours `.destroy`
   semaphore at the moment.
-3. Runtime `odoo.conf` housekeeping (`odoo-config` master-password, Redis
+2. Runtime `odoo.conf` housekeeping (`odoo-config` master-password, Redis
    section, etc.).
-4. Privilege drop – `gosu odoo …` (or equivalent `setuid`/`setgid`) removed,
+3. Privilege drop – `gosu odoo …` (or equivalent `setuid`/`setgid`) removed,
    resulting in Odoo running as *root* when the container starts under the
    default `USER root` directive.
-5. `flock`-style guard around writes to `/etc/odoo/.timestamp`.
-6. Additional proxy/logging flags not yet injected by `build_odoo_command()`.
+4. `flock`-style guard around writes to `/etc/odoo/.timestamp`.
+5. Additional proxy/logging flags not yet injected by `build_odoo_command()`.
 
 Keep the list in sync as the gaps are closed; update both this section **and**
 the status table above accordingly.
@@ -526,7 +521,7 @@ def wait_for_dependencies(env: EntrypointEnv | None = None) -> None:  # noqa: D4
 
     env = gather_env(env)
 
-        # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # Wait for Redis - we do not forward any parameter because the helper
     # reads *all* configuration from environment variables (REDIS_HOST …)
     # which is consistent with the historical behaviour.
@@ -680,7 +675,6 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     import tempfile
     from collections import OrderedDict
     from sys import modules as _modules, stderr
-
 
     # ------------------------------------------------------------------
     # Redis *initlead* lock – ensures only one replica performs the heavy
