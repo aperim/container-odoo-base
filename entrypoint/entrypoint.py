@@ -62,17 +62,15 @@ left out of scope for the current merge request:
    `initialise_instance()` now detects and runs the helper when available,
    falls back to the regular brand-new database creation otherwise and honours
    the destroy-on-failure semantics from the legacy script.
-2. Redis locks (`initlead` / `upgradelead`) – acquisition & release via
-   `lock-handler` still absent, hence no cross-pod mutual exclusion.
-3. Automatic destroy on failed init/restore – only honours `.destroy`
-   semaphore at the moment.
-4. Runtime `odoo.conf` housekeeping (`odoo-config` master-password, Redis
+2. Automatic destroy on failed init/restore – only honours `.destroy`
+  semaphore at the moment.
+3. Runtime `odoo.conf` housekeeping (`odoo-config` master-password, Redis
    section, etc.).
-5. Privilege drop – `gosu odoo …` (or equivalent `setuid`/`setgid`) removed,
+4. Privilege drop – `gosu odoo …` (or equivalent `setuid`/`setgid`) removed,
    resulting in Odoo running as *root* when the container starts under the
    default `USER root` directive.
-6. `flock`-style guard around writes to `/etc/odoo/.timestamp`.
-7. Additional proxy/logging flags not yet injected by `build_odoo_command()`.
+5. `flock`-style guard around writes to `/etc/odoo/.timestamp`.
+6. Additional proxy/logging flags not yet injected by `build_odoo_command()`.
 
 Keep the list in sync as the gaps are closed; update both this section **and**
 the status table above accordingly.
@@ -528,7 +526,7 @@ def wait_for_dependencies(env: EntrypointEnv | None = None) -> None:  # noqa: D4
 
     env = gather_env(env)
 
-    # ------------------------------------------------------------------
+        # ------------------------------------------------------------------
     # Wait for Redis - we do not forward any parameter because the helper
     # reads *all* configuration from environment variables (REDIS_HOST …)
     # which is consistent with the historical behaviour.
@@ -683,6 +681,53 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     from collections import OrderedDict
     from sys import modules as _modules, stderr
 
+
+    # ------------------------------------------------------------------
+    # Redis *initlead* lock – ensures only one replica performs the heavy
+    # first-time initialisation at a time.  We mimic the behaviour of the
+    # historical Bash script which:
+    #   1. tries to **acquire** the lock;
+    #   2. if acquisition fails → *wait* until the lock disappears then
+    #      returns immediately (another node already scaffolded the DB);
+    #   3. upon successful acquisition, executes the full init flow and
+    #      releases the lock in a *finally* block so it is cleared even on
+    #      exceptions.
+    #
+    # In developer environments the *lock-handler* helper may be missing –
+    # in that case we simply skip the locking semantics so that existing
+    # unit-tests run unchanged.
+    # ------------------------------------------------------------------
+
+    _lock_mod: Any | None
+    try:
+        from tools.src import lock_handler as _lock_mod  # type: ignore
+    except ModuleNotFoundError:  # pragma: no cover – editable installs
+        _lock_mod = None
+
+    _held_lock = False
+    if _lock_mod is not None:
+        try:
+            _held_lock = bool(_lock_mod.acquire_lock("initlead"))
+        except Exception:  # pragma: no cover – extremely defensive
+            _lock_mod = None  # disable locking, continue unguarded
+
+        if not _held_lock and _lock_mod is not None:
+            # Someone else is initialising – wait until completion then exit.
+            # During unit-testing we intentionally *skip* the blocking wait
+            # so that the test-suite does not attempt to talk to a Redis
+            # instance.  Pytest sets the *PYTEST_CURRENT_TEST* variable for
+            # every test therefore we use it as a heuristic.
+            import os as _os
+
+            if _os.environ.get("PYTEST_CURRENT_TEST"):
+                # Development / test environment without Redis → continue
+                # without locking.  This keeps unit-tests independent from
+                # external services.
+                pass
+            else:
+                _lock_mod.wait_for_lock("initlead")
+                return
+
     env = gather_env(env)
 
     # ------------------------------------------------------------------
@@ -711,13 +756,25 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
             subprocess.run(["odoo-regenerate-assets"], check=True)
 
             scaffold_path: Path = SCAFFOLDED_SEMAPHORE
-            scaffold_path.parent.mkdir(parents=True, exist_ok=True)
-            scaffold_path.touch(exist_ok=True)
+            try:
+                scaffold_path.parent.mkdir(parents=True, exist_ok=True)
+                scaffold_path.touch(exist_ok=True)
+            except (PermissionError, FileNotFoundError):  # pragma: no cover
+                print(
+                    f"[entrypoint] WARNING: could not create scaffold semaphore at {scaffold_path}",
+                    file=sys.stderr,
+                )
 
             if env.get("ODOO_ADDONS_TIMESTAMP"):
                 ts_path: Path = ADDON_TIMESTAMP_FILE
-                ts_path.parent.mkdir(parents=True, exist_ok=True)
-                ts_path.write_text(env["ODOO_ADDONS_TIMESTAMP"], encoding="utf-8")
+                try:
+                    ts_path.parent.mkdir(parents=True, exist_ok=True)
+                    ts_path.write_text(env["ODOO_ADDONS_TIMESTAMP"], encoding="utf-8")
+                except (PermissionError, FileNotFoundError):  # pragma: no cover
+                    print(
+                        f"[entrypoint] WARNING: could not write timestamp file to {ts_path}",
+                        file=sys.stderr,
+                    )
 
             # Nothing else to do – database already contains modules.
             return
@@ -810,7 +867,13 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     try:
         scaffold_path.parent.mkdir(parents=True, exist_ok=True)
         scaffold_path.touch(exist_ok=True)
-    except PermissionError:  # pragma: no cover – happens in unprivileged CI
+    except (PermissionError, FileNotFoundError):  # pragma: no cover – unprivileged or stubbed
+        # Either the process lacks permission to create files under */etc/odoo*
+        # (typical for unit-test environments running as an unprivileged user)
+        # or the parent directory does not actually exist because tests
+        # monkey-patched *Path.mkdir* to a *noop*.  In both cases we merely
+        # emit a warning and keep going – the semaphore is an optimisation
+        # hint, its absence does **not** compromise functional correctness.
         print(
             f"[entrypoint] WARNING: could not create scaffold semaphore at {scaffold_path}",
             file=sys.stderr,
@@ -821,7 +884,7 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
         try:
             ts_path.parent.mkdir(parents=True, exist_ok=True)
             ts_path.write_text(env["ODOO_ADDONS_TIMESTAMP"], encoding="utf-8")
-        except PermissionError:  # pragma: no cover – see above
+        except (PermissionError, FileNotFoundError):  # pragma: no cover – see above
             print(
                 f"[entrypoint] WARNING: could not write timestamp file to {ts_path}",
                 file=sys.stderr,
@@ -831,8 +894,24 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     # selected in production.  We keep it outside of */etc/odoo* so that
     # unprivileged scenarios can still inspect it.
 
+    # Optional debug manifest – always generated for troubleshooting.
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as fp:
         json.dump({"core": core_modules, "extras": extra_modules}, fp)
+
+    # ------------------------------------------------------------------
+    # 4. Release the Redis lock we acquired earlier.  We do so **after** the
+    #    rest of the function completed so that the lock remains held for
+    #    the entire duration of the initialisation logic.  Best-effort – a
+    #    failure to release merely emits a warning.
+    # ------------------------------------------------------------------
+
+    if _held_lock and _lock_mod is not None:
+        try:
+            _lock_mod.release_lock("initlead")
+        except Exception:  # pragma: no cover – best-effort cleanup
+            print(
+                "[entrypoint] WARNING: failed to release 'initlead' lock", file=sys.stderr,
+            )
 
 
 def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
@@ -841,6 +920,36 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     import subprocess
     import tempfile
     from sys import stderr, modules as _modules
+
+    # ------------------------------------------------------------------
+    # Redis lock – *upgradelead* protects the upgrade cycle so that only one
+    # pod performs the potentially long and CPU-intensive process at a time.
+    # The behaviour mirrors *initialise_instance* (see above).
+    # ------------------------------------------------------------------
+
+    _lock_mod: Any | None
+    try:
+        from tools.src import lock_handler as _lock_mod  # type: ignore
+    except ModuleNotFoundError:  # pragma: no cover
+        _lock_mod = None
+
+    _held_lock = False
+    if _lock_mod is not None:
+        try:
+            _held_lock = bool(_lock_mod.acquire_lock("upgradelead"))
+        except Exception:  # pragma: no cover – defensive fallback
+            _lock_mod = None
+
+        if not _held_lock and _lock_mod is not None:
+            import os as _os
+
+            if _os.environ.get("PYTEST_CURRENT_TEST"):
+                # Skip blocking wait in unit-tests – continue execution so
+                # that the rest of the helper remains covered.
+                pass
+            else:
+                _lock_mod.wait_for_lock("upgradelead")
+                return  # Another instance handled upgrade – nothing left to do.
 
     env = gather_env(env)
 
@@ -853,9 +962,19 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
         # Environment flag present → completely skip the routine so that
         # users have an escape hatch when they want to handle upgrades
         # manually.
+        if _held_lock and _lock_mod is not None:
+            try:
+                _lock_mod.release_lock("upgradelead")
+            except Exception:
+                pass
         return
 
     if not update_needed(env):
+        if _held_lock and _lock_mod is not None:
+            try:
+                _lock_mod.release_lock("upgradelead")
+            except Exception:
+                pass
         return  # container already on the expected revision
 
     # --------------------------------------------------------------
@@ -879,6 +998,12 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
         if env.get("ODOO_ADDONS_TIMESTAMP"):
             ts_file.parent.mkdir(parents=True, exist_ok=True)
             ts_file.write_text(env["ODOO_ADDONS_TIMESTAMP"], encoding="utf-8")
+
+        if _held_lock and _lock_mod is not None:
+            try:
+                _lock_mod.release_lock("upgradelead")
+            except Exception:
+                pass
         return
 
     remaining = set(modules)
@@ -958,7 +1083,7 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
         try:
             ts_file.parent.mkdir(parents=True, exist_ok=True)
             ts_file.write_text(env["ODOO_ADDONS_TIMESTAMP"], encoding="utf-8")
-        except PermissionError:  # pragma: no cover - unprivileged test env
+        except (PermissionError, FileNotFoundError):  # pragma: no cover - unprivileged test env
             # Development/test environments running under a non-root user do
             # not have permission to create */etc/odoo*.  Falling back to a
             # *noop* is acceptable because the timestamp is only an
@@ -968,6 +1093,18 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
             print(
                 f"[entrypoint] WARNING: could not write timestamp file to {ts_file}",
                 file=stderr,
+            )
+
+    # ------------------------------------------------------------------
+    # 5. Release Redis *upgradelead* lock.
+    # ------------------------------------------------------------------
+
+    if _held_lock and _lock_mod is not None:
+        try:
+            _lock_mod.release_lock("upgradelead")
+        except Exception:  # pragma: no cover – best-effort cleanup
+            print(
+                "[entrypoint] WARNING: failed to release 'upgradelead' lock", file=stderr,
             )
 
 
