@@ -34,6 +34,7 @@ Section | Concern (Bash)                 | Python helper              | Status
 4.4     | Wait for Redis / Postgres      | wait_for_dependencies      | ✓ (delegates to helper CLIs - skips in dev mode)
 5.1     | Destroy instance (drop DB)     | destroy_instance           | ✓
 5.2     | First-time initialisation      | initialise_instance        | ✓
+5.2     | Restore from backup            | initialise_instance        | ✓
 5.3     | Module upgrade loop            | upgrade_modules            | ✓ (executes live `odoo` when available, dev-mode stub otherwise)
 6       | Runtime UID/GID mutation       | apply_runtime_user         | ✓
 6       | Recursive permission fix       | fix_permissions            | ✓
@@ -56,8 +57,11 @@ The Python port is feature-rich but **not yet a drop-in replacement** for the
 legacy shell script.  The following items still need work and are *deliberately*
 left out of scope for the current merge request:
 
-1. Restore flow (spec §5.2) – missing call to `/usr/local/sbin/restore` and
-   subsequent `odoo-regenerate-assets` execution.
+1. ~~Restore flow (spec §5.2) – missing call to `/usr/local/sbin/restore` and
+   subsequent `odoo-regenerate-assets` execution.~~  **Implemented in v0.5** –
+   `initialise_instance()` now detects and runs the helper when available,
+   falls back to the regular brand-new database creation otherwise and honours
+   the destroy-on-failure semantics from the legacy script.
 2. Redis locks (`initlead` / `upgradelead`) – acquisition & release via
    `lock-handler` still absent, hence no cross-pod mutual exclusion.
 3. Automatic destroy on failed init/restore – only honours `.destroy`
@@ -682,7 +686,44 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     env = gather_env(env)
 
     # ------------------------------------------------------------------
-    # 0. Helper utilities that *must* succeed before we move on: the Bash
+    # 0. First attempt – restore from backup when the helper is available.
+    #    The legacy script tried unconditionally **before** falling back to
+    #    a fresh database creation.  We preserve the exact semantics:
+    #    * Absent helper   → go straight to brand-new DB creation (skip).
+    #    * Helper returns 0 → regeneration of assets & early success return.
+    #    * Helper returns ≠0 → invoke *destroy_instance* then continue with
+    #      standard initialisation flow.
+    # ------------------------------------------------------------------
+
+    restore_helper = Path("/usr/local/sbin/restore")
+    if restore_helper.is_file() and os.access(restore_helper, os.X_OK):
+        try:
+            subprocess.run([str(restore_helper)], check=True)
+        except subprocess.CalledProcessError:
+            # Failure – ensure we start from a clean slate then proceed with
+            # regular initialisation logic.  This keeps parity with the Bash
+            # version which performed a *destroy* on restore failure.
+            destroy_instance(env)
+        else:
+            # Success path – regenerate assets then record semaphore &
+            # timestamp exactly like the end of the new-DB branch.
+
+            subprocess.run(["odoo-regenerate-assets"], check=True)
+
+            scaffold_path: Path = SCAFFOLDED_SEMAPHORE
+            scaffold_path.parent.mkdir(parents=True, exist_ok=True)
+            scaffold_path.touch(exist_ok=True)
+
+            if env.get("ODOO_ADDONS_TIMESTAMP"):
+                ts_path: Path = ADDON_TIMESTAMP_FILE
+                ts_path.parent.mkdir(parents=True, exist_ok=True)
+                ts_path.write_text(env["ODOO_ADDONS_TIMESTAMP"], encoding="utf-8")
+
+            # Nothing else to do – database already contains modules.
+            return
+
+    # ------------------------------------------------------------------
+    # 1. Helper utilities that *must* succeed before we move on: the Bash
     #    implementation ran them unconditionally therefore we replicate the
     #    behaviour.  We **never** try to be smart when the binary is missing
     #    – instead we fail early so that container authors realise their
@@ -766,13 +807,25 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     # ------------------------------------------------------------------
 
     scaffold_path: Path = getattr(_modules[__name__], "SCAFFOLDED_SEMAPHORE")  # type: ignore[assignment]
-    scaffold_path.parent.mkdir(parents=True, exist_ok=True)
-    scaffold_path.touch(exist_ok=True)
+    try:
+        scaffold_path.parent.mkdir(parents=True, exist_ok=True)
+        scaffold_path.touch(exist_ok=True)
+    except PermissionError:  # pragma: no cover – happens in unprivileged CI
+        print(
+            f"[entrypoint] WARNING: could not create scaffold semaphore at {scaffold_path}",
+            file=sys.stderr,
+        )
 
     if env.get("ODOO_ADDONS_TIMESTAMP"):
         ts_path: Path = getattr(_modules[__name__], "ADDON_TIMESTAMP_FILE")  # type: ignore[assignment]
-        ts_path.parent.mkdir(parents=True, exist_ok=True)
-        ts_path.write_text(env["ODOO_ADDONS_TIMESTAMP"], encoding="utf-8")
+        try:
+            ts_path.parent.mkdir(parents=True, exist_ok=True)
+            ts_path.write_text(env["ODOO_ADDONS_TIMESTAMP"], encoding="utf-8")
+        except PermissionError:  # pragma: no cover – see above
+            print(
+                f"[entrypoint] WARNING: could not write timestamp file to {ts_path}",
+                file=sys.stderr,
+            )
 
     # Optional debug manifest – extremely useful to understand what the logic
     # selected in production.  We keep it outside of */etc/odoo* so that

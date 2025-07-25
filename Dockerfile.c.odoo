@@ -15,7 +15,7 @@ COPY tools/src/odoo_regenerate_assets.py /usr/local/sbin/odoo-regenerate-assets
 COPY tools/src/odoo_upgrade.py /usr/local/sbin/odoo-upgrade
 COPY backup/backup.sh /usr/local/sbin/backup
 COPY backup/restore.sh /usr/local/sbin/restore
-COPY entrypoint/entrypoint.sh /usr/local/sbin/entrypoint
+COPY entrypoint/entrypoint.py /usr/local/sbin/entrypoint
 
 ARG ODOO_MAJOR_VERSION=17
 ARG ODOO_MINOR_VERSION=0

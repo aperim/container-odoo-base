@@ -262,13 +262,20 @@ jobs:
             python3 -m unittest discover tests
           fi
 
+      - name: Set ODOO_ENTERPRISE_REPOSITORY
+        run: |
+          if [ -n "${{ secrets.ODOO_ENTERPRISE_REPOSITORY }}" ]; then
+            echo "ODOO_ENTERPRISE_REPOSITORY=${{ secrets.ODOO_ENTERPRISE_REPOSITORY }}" >> "$GITHUB_ENV"
+          else
+            echo "ODOO_ENTERPRISE_REPOSITORY=github.com/odoo/enterprise" >> "$GITHUB_ENV"
+          fi
+
       # Run builder preparation script
       - name: Run builder prep script
         env:
           ODOO_MAJOR_VERSION: ${{ matrix.version_major }}
           ODOO_MINOR_VERSION: ${{ matrix.version_minor }}
           ODOO_COMMUNITY_REPOSITORY: "github.com/odoo/odoo"
-          ODOO_ENTERPRISE_REPOSITORY: "github.com/odoo/enterprise"
           GITHUB_TOKEN: ${{ secrets.APERIM_GITHUB_CI_PAT }}
           GEOIPUPDATE_ACCOUNT_ID: ${{ secrets.GEOIPUPDATE_ACCOUNT_ID }}
           GEOIPUPDATE_LICENSE_KEY: ${{ secrets.GEOIPUPDATE_LICENSE_KEY }}
