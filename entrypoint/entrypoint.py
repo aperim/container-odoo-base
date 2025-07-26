@@ -38,6 +38,7 @@ Section | Concern (Bash)                 | Python helper              | Status
 5.3     | Module upgrade loop            | upgrade_modules            | ✓ (executes live `odoo` when available, dev-mode stub otherwise)
 6       | Runtime UID/GID mutation       | apply_runtime_user         | ✓
 6       | Recursive permission fix       | fix_permissions            | ✓
+6       | Privilege drop (setuid/gid)    | drop_privileges            | ✓
 7       | Final Odoo command assembly    | build_odoo_command         | ✓
 7       | Runtime odoo.conf housekeeping | runtime_housekeeping       | ✓
 Misc    | Detect custom user commands    | is_custom_command          | ✓
@@ -58,10 +59,7 @@ The Python port is feature-rich but **not yet a drop-in replacement** for the
 legacy shell script.  The following items still need work and are *deliberately*
 left out of scope for the current merge request:
 
-2. Privilege drop – `gosu odoo …` (or equivalent `setuid`/`setgid`) removed,
-   resulting in Odoo running as *root* when the container starts under the
-   default `USER root` directive.
-3. `flock`-style guard around writes to `/etc/odoo/.timestamp`.
+2. `flock`-style guard around writes to `/etc/odoo/.timestamp`.
 3. Additional proxy/logging flags not yet injected by `build_odoo_command()`.
 
 Keep the list in sync as the gaps are closed; update both this section **and**
@@ -95,6 +93,7 @@ __all__ = [
     "is_custom_command",
     "apply_runtime_user",
     "fix_permissions",
+    "drop_privileges",
     "update_needed",
     "compute_workers",
     "compute_http_interface",
@@ -1514,9 +1513,19 @@ def main(argv: Sequence[str] | None = None) -> None:  # pragma: no cover
 
         cmd = build_odoo_command(user_args, env=env)
 
-        # Fall-back for development environments where the real binary might
-        # not be present - in that case we simply log the command and exit.
-        if not Path(cmd[0]).is_file():
+        # Drop root privileges **right before** replacing the current process
+        # image so that every preparatory step above can still run with full
+        # capabilities.  In development environments outside of the Docker
+        # image the uid/gid switch might fail therefore we perform it **only**
+        # when the target binary exists – the same heuristic we already use
+        # for the *execv* fast-exit.
+
+        if Path(cmd[0]).is_file():
+            drop_privileges(env)
+        else:
+            # Do not attempt privilege drop in dev-mode because the local user
+            # running pytest is unlikely to be root anyway.  We keep the
+            # diagnostic consistent with the rest of the helper.
             print(
                 f"[entrypoint] dev-mode - would exec: {' '.join(cmd)}",
                 file=sys.stderr,
@@ -1666,6 +1675,74 @@ def fix_permissions(env: EntrypointEnv | None = None) -> None:  # noqa: D401
         # symlinks consistently.  The helper is mocked in the test-suite so
         # no actual privilege escalation happens.
         subprocess.run(["chown", "-R", "odoo:odoo", str(p)], check=True)
+
+# ---------------------------------------------------------------------------
+#  Privilege drop – replace historical `gosu`
+# ---------------------------------------------------------------------------
+
+
+def drop_privileges(env: EntrypointEnv | None = None) -> None:  # noqa: D401 – imperative mood
+    """Permanently switch to the *odoo* UNIX account for the rest of the process.
+
+    The original Bash entrypoint relied on the `gosu` wrapper to execute the
+    final `odoo server` command under an unprivileged user while retaining
+    *root* during the preparatory steps that require elevated permissions
+    (file ownership fixes, package installation, database cleanup …).
+
+    The Python port achieves the **exact same result** by calling the
+    low-level `os.setuid`/`os.setgid` primitives instead of spawning an
+    additional helper process.  The implementation follows the canonical
+    recipe recommended by the CPython documentation:
+
+    1. Abort early when the current process is **already** running as a
+       non-root user – either because the container started with `USER odoo`
+       or because tests monkey-patched `os.geteuid`.
+    2. Retrieve the target UID/GID from the *odoo* account entry returned by
+       `pwd.getpwnam()` (this reflects any change performed earlier by
+       :pyfunc:`apply_runtime_user`).
+    3. Initialise the supplementary groups with `os.initgroups` so that file
+       system ACLs keep working when the container image ships additional
+       memberships.
+    4. Call `os.setgid` **before** `os.setuid` – dropping the group
+       privileges first is the common, safer order.
+    5. Update `$HOME` to the value from `/etc/passwd` so that applications
+       respecting the variable do not keep writing under `/root` by mistake.
+
+    The helper is idempotent and safe to call multiple times – subsequent
+    invocations become no-ops once the effective UID is no longer *0*.
+    """
+
+    import os
+    import pwd
+
+    # Fast exit when not running as root – nothing to do.
+    if os.geteuid() != 0:
+        return
+
+    try:
+        pw = pwd.getpwnam("odoo")
+    except KeyError as exc:  # pragma: no cover – should never happen in image
+        raise RuntimeError("system user 'odoo' not found") from exc
+
+    target_uid = pw.pw_uid
+    target_gid = pw.pw_gid
+
+    # Redundant guard – if the image already starts under the right UID/GID
+    # (for instance when built with `USER odoo`) the helper becomes inert.
+    if os.geteuid() == target_uid and os.getegid() == target_gid:
+        return
+
+    # Ensure supplementary groups mirror the account definition *before*
+    # switching away from root.
+    os.initgroups(pw.pw_name, target_gid)
+
+    # Drop group privileges first, then user privileges.
+    os.setgid(target_gid)
+    os.setuid(target_uid)
+
+    # Keep environment coherent – a surprising but common pitfall when not
+    # using a wrapper like *gosu*.
+    os.environ["HOME"] = pw.pw_dir
 
 
 def update_needed(env: EntrypointEnv | None = None) -> bool:  # noqa: D401

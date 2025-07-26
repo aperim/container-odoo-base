@@ -61,6 +61,7 @@ def test_main_regular_flow(monkeypatch: pytest.MonkeyPatch) -> None:
         "destroy_instance",
         "initialise_instance",
         "upgrade_modules",
+        "drop_privileges",
     ):
 
         monkeypatch.setattr(ep, name, lambda *_args, __name=name: calls.append(__name))

@@ -51,6 +51,28 @@ def _patch_common(monkeypatch):  # noqa: D401 – test helper
     ts_path = ts_dir / "timestamp"
     monkeypatch.setattr(ep, "ADDON_TIMESTAMP_FILE", ts_path, raising=True)
 
+    # Convenience: patch helper attributes on both the *implementation* module
+    # (``entrypoint.entrypoint``) and the *package*-level re-export so that
+    # the test remains agnostic of where the function is looked up from.  This
+    # is required because the production code sometimes dereferences the
+    # helper from the package module (to pick up monkey-patches applied by
+    # callers) while the tests historically patched the implementation
+    # sub-module directly.  Keeping the two in sync avoids brittle failures
+    # when internal look-ups change.
+
+    import sys as _sys
+
+    _pkg_mod = _sys.modules.get("entrypoint")
+
+    def _sync_attr(name: str, value):  # noqa: WPS430 – tiny inner helper
+        monkeypatch.setattr(ep, name, value, raising=True)
+        if _pkg_mod is not None:
+            monkeypatch.setattr(_pkg_mod, name, value, raising=False)
+
+    # Expose the nested *sync* helper to the outer scope so that individual
+    # test-cases can use it.
+    globals()["_sync_attr"] = _sync_attr
+
 
 def test_skip_when_flag_set(monkeypatch):
     """Helper must be a *noop* when ODOO_NO_AUTO_UPGRADE is defined."""
@@ -78,7 +100,7 @@ def test_skip_when_not_needed(monkeypatch):
 
     _patch_common(monkeypatch)
 
-    monkeypatch.setattr(ep, "update_needed", lambda _env=None: False, raising=True)
+    _sync_attr("update_needed", lambda _env=None: False)
     import subprocess as _sub
     monkeypatch.setattr(_sub, "run", lambda *_a, **_k: None)
 
@@ -97,9 +119,9 @@ def test_successful_upgrade(monkeypatch, capsys):  # noqa: D401 – pytest signa
     # Sanity-check the timestamp path has been patched *before* the helper runs.
     assert str(ep.ADDON_TIMESTAMP_FILE).startswith("/tmp"), "patch_common failed to override timestamp file"
 
-    monkeypatch.setattr(ep, "update_needed", lambda _env=None: True, raising=True)
-    monkeypatch.setattr(ep, "get_addons_paths", lambda _env=None: ["/dummy"], raising=True)
-    monkeypatch.setattr(ep, "collect_addons", lambda *_a, **_kw: ["a", "b"], raising=True)
+    _sync_attr("update_needed", lambda _env=None: True)
+    _sync_attr("get_addons_paths", lambda _env=None: ["/dummy"])  # noqa: WPS437
+    _sync_attr("collect_addons", lambda *_a, **_kw: ["a", "b"])  # noqa: WPS437
 
     env = {"ODOO_ADDONS_TIMESTAMP": "42"}
     ep.upgrade_modules(env)
@@ -133,9 +155,9 @@ def test_partial_failure(monkeypatch, capsys):
     import subprocess as _sub
     monkeypatch.setattr(_sub, "run", recorder)
 
-    monkeypatch.setattr(ep, "update_needed", lambda _env=None: True, raising=True)
-    monkeypatch.setattr(ep, "get_addons_paths", lambda _env=None: ["/dummy"], raising=True)
-    monkeypatch.setattr(ep, "collect_addons", lambda *_a, **_kw: ["ok", "fail"], raising=True)
+    _sync_attr("update_needed", lambda _env=None: True)
+    _sync_attr("get_addons_paths", lambda _env=None: ["/dummy"])  # noqa: WPS437
+    _sync_attr("collect_addons", lambda *_a, **_kw: ["ok", "fail"])  # noqa: WPS437
 
     ep.upgrade_modules({})
 
@@ -159,9 +181,9 @@ def test_total_failure(monkeypatch):
     import subprocess as _sub
     monkeypatch.setattr(_sub, "run", recorder)
 
-    monkeypatch.setattr(ep, "update_needed", lambda _env=None: True, raising=True)
-    monkeypatch.setattr(ep, "get_addons_paths", lambda _env=None: ["/dummy"], raising=True)
-    monkeypatch.setattr(ep, "collect_addons", lambda *_a, **_kw: ["m1", "m2"], raising=True)
+    _sync_attr("update_needed", lambda _env=None: True)
+    _sync_attr("get_addons_paths", lambda _env=None: ["/dummy"])  # noqa: WPS437
+    _sync_attr("collect_addons", lambda *_a, **_kw: ["m1", "m2"])  # noqa: WPS437
 
     import pytest
 
