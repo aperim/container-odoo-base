@@ -2232,6 +2232,29 @@ def fix_permissions(env: EntrypointEnv | None = None) -> None:  # noqa: D401
         Path("/mnt/addons"),
     ]
 
+    # --------------------------------------------------------------
+    # The helper must run **only** when the current process has enough
+    # privileges to change ownership.  Attempting to `chown` as an
+    # unprivileged user would raise a *PermissionError* and break
+    # root-less scenarios (e.g. running the image with `--user` or
+    # inside a Podman root-less container).  The historical Bash script
+    # was implicitly guarded because the container normally starts as
+    # *root*; when it did not, the `chown -R` simply failed but the
+    # error was swallowed due to `set -e` being disabled for that
+    # portion of the script.
+
+    # The Python port takes a safer stance: we skip the whole routine
+    # when *geteuid()* is non-zero which delivers the same behaviour
+    # (no permission changes) without cluttering the logs with
+    # confusing tracebacks.
+    # --------------------------------------------------------------
+
+    import os as _os
+
+    if _os.geteuid() != 0:
+        # Already running as an unprivileged user – nothing to fix.
+        return
+
     for p in targets:
         # Skip absent paths - some variants of the image (e.g. slim testing
         # fixtures) do not create the directory at build-time.

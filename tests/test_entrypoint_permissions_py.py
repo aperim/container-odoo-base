@@ -51,6 +51,12 @@ def test_apply_runtime_user_noop(monkeypatch: pytest.MonkeyPatch) -> None:  # no
 def test_apply_runtime_user_modifies_uid_gid(monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: D401
     """Correct *usermod* / *groupmod* invocations are emitted when needed."""
 
+    # Pretend we are running as *root* so the helper proceeds with the
+    # permission fix routine.
+    import os
+
+    monkeypatch.setattr(os, "geteuid", lambda: 0, raising=True)
+
     recorded: List[List[str]] = []
 
     import subprocess
@@ -82,6 +88,11 @@ def test_apply_runtime_user_modifies_uid_gid(monkeypatch: pytest.MonkeyPatch) ->
 
 def test_fix_permissions_chown_invocations(monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: D401
     """The helper must call *chown -R* for every target that exists."""
+
+    # Pretend we are running as *root* so the helper proceeds with chown.
+    import os
+
+    monkeypatch.setattr(os, "geteuid", lambda: 0, raising=True)
 
     # Keep original *Path* methods so we can delegate when needed.
     import pathlib
@@ -120,3 +131,26 @@ def test_fix_permissions_chown_invocations(monkeypatch: pytest.MonkeyPatch) -> N
 
     # Order is not mandated, so we compare as *sets*.
     assert {tuple(cmd) for cmd in recorded} == {tuple(cmd) for cmd in expected}
+
+
+def test_fix_permissions_skipped_when_unprivileged(monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: D401
+    """When executed as a non-root user the helper must *not* attempt chown."""
+
+    # Pretend we are not running as root.
+    import os
+
+    monkeypatch.setattr(os, "geteuid", lambda: 1000, raising=True)
+
+    called = False
+
+    import subprocess
+
+    def _fake_run(cmd, **kwargs):  # noqa: D401 – tiny stub
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(subprocess, "run", _fake_run, raising=True)
+
+    ep.fix_permissions({})
+
+    assert called is False
