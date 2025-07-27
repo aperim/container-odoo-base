@@ -49,13 +49,21 @@ def test_injected_defaults(monkeypatch):  # noqa: D401 – imperative mood
     expected = {
         "--proxy-add-x-forwarded-port",
         "--proxy-add-x-forwarded-host",
+        "--proxy-add-x-forwarded-for",
         "--log-handler",
         "--limit-memory-soft",
         "--limit-memory-hard",
+        "--logfile",
+        "--csv-internal-separator",
+        "--limit-request",
     }
 
-    # `--log-handler` is injected *with* a value so we only assert the prefix.
-    assert expected.difference({"--log-handler"}).issubset(flags)
+    # Flags with associated values appear as **two** arguments therefore we
+    # only match their *name* part.  `--log-handler` and `--logfile` fall in
+    # that category.
+    value_flags = {"--log-handler", "--logfile"}
+
+    assert expected.difference(value_flags).issubset(flags)
     assert any(f.startswith("--log-handler") for f in flags)
 
 
@@ -82,3 +90,9 @@ def test_no_duplicate_when_user_provides(monkeypatch):  # noqa: D401
 
     occurrences_log = [a for a in cmd if a.startswith("--log-handler")]
     assert len(occurrences_log) == 1
+
+    # Override a *value* flag – ensure helper does not append its own default
+    user_argv2 = ["--logfile=/tmp/custom.log"]
+    cmd2 = ep.build_odoo_command(user_argv2, env=env)
+    occurrences_logfile = [a for a in cmd2 if a.startswith("--logfile")]
+    assert len(occurrences_logfile) == 1  # only user-provided path

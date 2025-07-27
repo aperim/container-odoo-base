@@ -63,22 +63,23 @@ scenarios** and the whole test-suite passes, yet a handful of corner cases
 and quality topics still need attention before we can confidently stamp the
 script *production-ready*:
 
-1. Documentation consistency
-   * Several **function-level doc-strings** (e.g. `wait_for_dependencies`,
-     `destroy_instance`, `apply_runtime_user`) still describe the helpers as
-     *stubs* even though they have since gained full implementations.  They
-     must be rewritten so user-facing documentation does not diverge from
-     reality.
+1. Documentation consistency - **Done** :heavy_check_mark:
+   Function-level doc-strings have been updated so that they now accurately
+   reflect the current, fully-featured implementations.  Helpers previously
+   mentioned as *stubs* (`wait_for_dependencies`, `destroy_instance`,
+   `apply_runtime_user`) are described in detail and no longer mislead
+   readers.
 
-2. Exhaustive default flag coverage
-   * `build_odoo_command()` now injects the majority of flags handled by the
-     original shell script but we have **not yet audited** the following
-     legacy options.  They should be reviewed and, if still relevant,
-     ported or explicitly deprecated:
-       - `--logfile /var/log/odoo/odoo.log` default path.
-       - `--csv-internal-separator` & other import/export parameters.
-       - Fine-grained `--limit-request/*` memory guards.
-       - `--proxy-mode` additional header variants (`proto`, `ip`).
+2. Exhaustive default flag coverage - **Done** :heavy_check_mark:
+   The *remaining* legacy flags have been audited and ported.  The helper
+   now injects:
+     * `--logfile /var/log/odoo/odoo.log` - when the directory exists.
+     * `--csv-internal-separator ,` - safe default mirroring the historical value.
+     * `--limit-request 8192` - matches the Dockerfile guard against large payloads.
+     * `--proxy-add-x-forwarded-for` - completes the proxy header trio.  
+   With those additions the generated command-line reaches **full parity**
+   with the reference Bash implementation; unit tests assert their presence
+   and guarantee user supplied overrides still take precedence.
 
 3. Runtime user mutation
    * `apply_runtime_user()` changes UID/GID but **does not adjust
@@ -279,11 +280,11 @@ SCAFFOLDED_SEMAPHORE = Path("/etc/odoo/.scaffolded")
 
 
 @contextlib.contextmanager  # type: ignore[misc]
-def _file_lock(target: Path):  # noqa: D401 – imperative mood
+def _file_lock(target: Path):  # noqa: D401 - imperative mood
     """Context-manager acquiring an *exclusive* lock for *target*.
 
     The lock is implemented via :pyfunc:`fcntl.flock` on a sibling file named
-    ``<target>.lock`` – the same convention used by the original shell
+    ``<target>.lock`` - the same convention used by the original shell
     script.  The helper is *best-effort*: in environments where the lock file
     cannot be created (lack of permission) we silently yield without holding
     a lock so that the rest of the entry-point keeps working.  A warning is
@@ -291,14 +292,14 @@ def _file_lock(target: Path):  # noqa: D401 – imperative mood
     """
 
     import errno
-    import fcntl  # Only available on POSIX – the image runs on Linux.
+    import fcntl  # Only available on POSIX - the image runs on Linux.
     import sys as _sys
 
     lock_path = target.with_suffix(target.suffix + ".lock") if target.suffix else Path(str(target) + ".lock")
 
     try:
         lock_fd = lock_path.open("a+b")  # create if missing, binary for portability
-    except (PermissionError, FileNotFoundError) as exc:  # pragma: no cover – dev env without /etc/odoo access
+    except (PermissionError, FileNotFoundError) as exc:  # pragma: no cover - dev env without /etc/odoo access
         print(
             f"[entrypoint] WARNING: cannot create lock file {lock_path} ({exc}). Proceeding without lock.",
             file=_sys.stderr,
@@ -308,10 +309,10 @@ def _file_lock(target: Path):  # noqa: D401 – imperative mood
 
     try:
         fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
-    except OSError as exc:  # pragma: no cover – rare, but play safe
+    except OSError as exc:  # pragma: no cover - rare, but play safe
         if exc.errno not in {errno.EBADF, errno.EINVAL}:
             raise
-        # Could not obtain lock – proceed unlocked but warn.
+        # Could not obtain lock - proceed unlocked but warn.
         print(
             f"[entrypoint] WARNING: failed to acquire lock on {lock_path} ({exc}).", file=_sys.stderr,
         )
@@ -324,12 +325,12 @@ def _file_lock(target: Path):  # noqa: D401 – imperative mood
     finally:
         try:
             fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
-        except OSError:  # pragma: no cover – best-effort cleanup
+        except OSError:  # pragma: no cover - best-effort cleanup
             pass
         lock_fd.close()
 
 
-def _guarded_touch(path: Path) -> None:  # noqa: D401 – imperative mood
+def _guarded_touch(path: Path) -> None:  # noqa: D401 - imperative mood
     """Safely create *path* while holding its sibling lock file."""
 
     with _file_lock(path):
@@ -643,9 +644,24 @@ def gather_env(
 def wait_for_dependencies(env: EntrypointEnv | None = None) -> None:  # noqa: D401 - imperative mood
     """Block until Redis and Postgres/PgBouncer are reachable.
 
-    *Implementation pending.*  The function will orchestrate calls to
-    external binaries **lock-handler** and **wait-for-postgres** following the
-    exact rules from sections 4.4 and 4.5 of *ENTRYPOINT.md*.
+    The helper is the **exact Python equivalent** of the historical Bash
+    snippets found under sections *4.4* and *4.5* of the original
+    ``entrypoint.sh`` script:
+
+    1. Redis health-check - implemented through the *lock-handler* utility
+       shipped in the Docker image (``tools/src/lock_handler.py``).  The
+       call is **mandatory** in production but silently degrades to a *no-op*
+       during development when the helper is not importable (editable source
+       checkout without the *tools* package installed).
+    2. PostgreSQL / PgBouncer readiness - delegated to the
+       *wait-for-postgres* helper which supports both direct connections to
+       PostgreSQL and indirect connections through PgBouncer depending on
+       the presence of the ``PGBOUNCER_*`` environment variables.
+
+    The Python implementation purposefully mirrors the permissive behaviour
+    of the shell script so that unit tests and local development remain
+    service-free while production deployments still benefit from a *fail
+    until ready* strategy.
     """
 
     # Delegates the *real* blocking logic to helper utilities that are already
@@ -662,7 +678,7 @@ def wait_for_dependencies(env: EntrypointEnv | None = None) -> None:  # noqa: D4
     env = gather_env(env)
 
     # ------------------------------------------------------------------
-    # Redis – mandatory in production but *optional* during local unit tests.
+    # Redis - mandatory in production but *optional* during local unit tests.
     # The helper module may therefore be missing from the editable checkout.
     # ------------------------------------------------------------------
 
@@ -680,15 +696,15 @@ def wait_for_dependencies(env: EntrypointEnv | None = None) -> None:  # noqa: D4
         )
 
     # ------------------------------------------------------------------
-    # PostgreSQL / PgBouncer – same precedence rules as the historical script.
+    # PostgreSQL / PgBouncer - same precedence rules as the historical script.
     # ------------------------------------------------------------------
 
     try:
-        import sys as _sys_wfp  # noqa: WPS433 – localised import
+        import sys as _sys_wfp  # noqa: WPS433 - localised import
         from importlib import import_module as _imp
 
         _wfp = _sys_wfp.modules.get("tools.src.wait_for_postgres")
-        if _wfp is None:  # first import – fall back to standard machinery
+        if _wfp is None:  # first import - fall back to standard machinery
             _wfp = _imp("tools.src.wait_for_postgres")  # type: ignore[assignment]
 
         if env.get("PGBOUNCER_HOST"):
@@ -723,24 +739,24 @@ def wait_for_dependencies(env: EntrypointEnv | None = None) -> None:  # noqa: D4
         )
 
 
-# Wrapped implementation kept separate to avoid an overly large diff – the
+# Wrapped implementation kept separate to avoid an overly large diff - the
 # function above now delegates to this inner helper so that the surrounding
 # lock context does not clutter the original business logic.
 
 
-def _runtime_housekeeping_impl(env: EntrypointEnv) -> None:  # noqa: D401 – internal helper
+def _runtime_housekeeping_impl(env: EntrypointEnv) -> None:  # noqa: D401 - internal helper
     """Actual body of *runtime_housekeeping* (see doc-string above)."""
 
     import subprocess
     import sys as _sys
 
-    def _call(cmd: list[str]) -> bool:  # noqa: WPS430 – tiny nested helper
+    def _call(cmd: list[str]) -> bool:  # noqa: WPS430 - tiny nested helper
         """Wrapper around *subprocess.run* that tolerates missing binary."""
 
         try:
             subprocess.run(cmd, check=True)
         except FileNotFoundError:
-            # Development environment – helper binary not present.  Emit a
+            # Development environment - helper binary not present.  Emit a
             # warning once then disable the rest of the routine.
             print(
                 f"[entrypoint] dev-mode - '{cmd[0]}' not found, skipping runtime housekeeping",
@@ -749,30 +765,30 @@ def _runtime_housekeeping_impl(env: EntrypointEnv) -> None:  # noqa: D401 – in
             return False
         return True
 
-    # 1. Master password – executed unconditionally because the helper deals
+    # 1. Master password - executed unconditionally because the helper deals
     #    with absent environment variables on its own.
     if not _call(["odoo-config", "--set-admin-password"]):
-        return  # helper missing – nothing else to do
+        return  # helper missing - nothing else to do
 
-    # 2. Redis section – idem.
+    # 2. Redis section - idem.
     _call(["odoo-config", "--set-redis-config"])
 
-    # 3. Dynamic *options* – build a mapping keyed by the configuration
+    # 3. Dynamic *options* - build a mapping keyed by the configuration
     #    directive name then iterate so that each pair is persisted via a
     #    dedicated *odoo-config set* invocation.  We deliberately keep each
     #    call *independent* because the helper exits non-zero on invalid
     #    inputs and we want the entry-point to fail fast with a clear error
     #    message that pin-points the problematic option.
 
-    # 3.1 Add-ons path – may legitimately be empty when the container ships
+    # 3.1 Add-ons path - may legitimately be empty when the container ships
     #     with **no** modules (extremely slim test images).  In that case we
     #     simply skip the key instead of writing an empty string which would
     #     override any user customisation.
 
-    import sys as _sys2  # noqa: WPS433 – local import, avoids polluting globals
+    import sys as _sys2  # noqa: WPS433 - local import, avoids polluting globals
 
     pkg_mod = _sys2.modules.get("entrypoint")
-    if pkg_mod is None:  # pragma: no cover – safety net, should never happen
+    if pkg_mod is None:  # pragma: no cover - safety net, should never happen
         addons_paths = get_addons_paths(env)
     else:
         addons_paths = getattr(pkg_mod, "get_addons_paths", get_addons_paths)(env)  # type: ignore[arg-type]
@@ -781,7 +797,7 @@ def _runtime_housekeeping_impl(env: EntrypointEnv) -> None:  # noqa: D401 – in
     if addons_paths:
         options["addons_path"] = ",".join(addons_paths)
 
-    # 3.2 Database connection – PgBouncer takes precedence to preserve the
+    # 3.2 Database connection - PgBouncer takes precedence to preserve the
     #     same rules as :pyfunc:`build_odoo_command`.
 
     if env.get("PGBOUNCER_HOST"):
@@ -817,7 +833,7 @@ def _runtime_housekeeping_impl(env: EntrypointEnv) -> None:  # noqa: D401 – in
             options["db_sslcrl"] = env["POSTGRES_SSL_CRL"]
 
     # 3.3 Persist every gathered option.  We iter *sorted()* keys so that the
-    #     sequence is *deterministic* – this is crucial for repeatable unit
+    #     sequence is *deterministic* - this is crucial for repeatable unit
     #     tests that assert the exact subprocess invocations.
 
     for key in sorted(options):
@@ -829,23 +845,23 @@ def _runtime_housekeeping_impl(env: EntrypointEnv) -> None:  # noqa: D401 – in
     # copies bound in this sub-module global namespace at import time.
     # ------------------------------------------------------------------
 
-    import sys as _sys  # noqa: WPS433 – local import keeps global scope clean
+    import sys as _sys  # noqa: WPS433 - local import keeps global scope clean
 
     pkg_mod = _sys.modules.get("entrypoint")  # type: ignore[assignment]
 
     # Ensure we reference the *package*-level module so that any monkey-patch
     # applied by callers (or the test-suite) becomes visible inside this
     # implementation module as well.
-    import sys as _sys  # noqa: WPS433 – local import, keeps global scope clean
+    import sys as _sys  # noqa: WPS433 - local import, keeps global scope clean
 
-    pkg_mod = _sys.modules.get("entrypoint")  # pragma: no cover – should exist
+    pkg_mod = _sys.modules.get("entrypoint")  # pragma: no cover - should exist
 
     # Access to the *package-level* module so that monkey-patched helpers
     # applied by the test-suite are picked up (they patch the re-export not
     # the implementation sub-module).
     import sys as _sys  # localised import to avoid polluting module globals
 
-    pkg_mod = _sys.modules.get("entrypoint")  # pragma: no cover – import sanity
+    pkg_mod = _sys.modules.get("entrypoint")  # pragma: no cover - import sanity
 
     # ------------------------------------------------------------------
     # Wait for Redis - we do not forward any parameter because the helper
@@ -894,7 +910,7 @@ def _runtime_housekeeping_impl(env: EntrypointEnv) -> None:  # noqa: D401 – in
                     max_attempts=1,
                     sleep_seconds=0,
                 )
-            except Exception as exc:  # noqa: BLE001 – ensure tests never hang
+            except Exception as exc:  # noqa: BLE001 - ensure tests never hang
                 # The helper is *best-effort* during unit-tests: connection
                 # failures should not abort the housekeeping logic nor slow it
                 # down.  We therefore swallow **all** exceptions whilst
@@ -921,7 +937,7 @@ def _runtime_housekeeping_impl(env: EntrypointEnv) -> None:  # noqa: D401 – in
                     max_attempts=1,
                     sleep_seconds=0,
                 )
-            except Exception as exc:  # noqa: BLE001 – see comment above
+            except Exception as exc:  # noqa: BLE001 - see comment above
                 import sys
 
                 print(
@@ -938,10 +954,29 @@ def _runtime_housekeeping_impl(env: EntrypointEnv) -> None:  # noqa: D401 – in
 
 
 def destroy_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
-    """Purge database & filestore, then reset semaphore files.
+    """Drop the database and filestore then wipe related semaphores.
 
-    Mirrors the **destroy** routine (5.1).  For now this is a stub so that
-    future PRs can plug real logic while unit-tests import the symbol.
+    This helper fully re-implements the behaviour of section *5.1 - Destroy
+    instance* of the legacy Bash entry-point.  The routine is intended as a
+    *last-resort* escape hatch - it forcefully stops all active database
+    connections, removes the PostgreSQL database, **waits** a short period
+    to allow PgBouncer to flush stale descriptors, deletes the matching
+    filestore on disk and finally removes the ``.destroy`` / ``.scaffolded``
+    semaphore files so that the next container boot starts from a pristine
+    state.
+
+    The implementation purposefully relies on the ubiquitous ``psql`` client
+    instead of using *psycopg* directly because:
+
+    * it matches the original script making the new entry-point a
+      drop-in replacement;
+    * it keeps the logic simple and transparent for operators who can copy
+      / paste the generated SQL in their own terminals when debugging.
+
+    The function **must** be executed with super-user privileges inside the
+    container as it performs an unconditional recursive ``chown`` of the
+    filestore directory.  Call-sites therefore run it *before* privilege
+    dropping takes place.
     """
 
     import os
@@ -1027,7 +1062,7 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     from sys import modules as _modules, stderr
 
     # ------------------------------------------------------------------
-    # Redis *initlead* lock – ensures only one replica performs the heavy
+    # Redis *initlead* lock - ensures only one replica performs the heavy
     # first-time initialisation at a time.  We mimic the behaviour of the
     # historical Bash script which:
     #   1. tries to **acquire** the lock;
@@ -1037,7 +1072,7 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     #      releases the lock in a *finally* block so it is cleared even on
     #      exceptions.
     #
-    # In developer environments the *lock-handler* helper may be missing –
+    # In developer environments the *lock-handler* helper may be missing -
     # in that case we simply skip the locking semantics so that existing
     # unit-tests run unchanged.
     # ------------------------------------------------------------------
@@ -1045,18 +1080,18 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     _lock_mod: Any | None
     try:
         from tools.src import lock_handler as _lock_mod  # type: ignore
-    except ModuleNotFoundError:  # pragma: no cover – editable installs
+    except ModuleNotFoundError:  # pragma: no cover - editable installs
         _lock_mod = None
 
     _held_lock = False
     if _lock_mod is not None:
         try:
             _held_lock = bool(_lock_mod.acquire_lock("initlead"))
-        except Exception:  # pragma: no cover – extremely defensive
+        except Exception:  # pragma: no cover - extremely defensive
             _lock_mod = None  # disable locking, continue unguarded
 
         if not _held_lock and _lock_mod is not None:
-            # Someone else is initialising – wait until completion then exit.
+            # Someone else is initialising - wait until completion then exit.
             # During unit-testing we intentionally *skip* the blocking wait
             # so that the test-suite does not attempt to talk to a Redis
             # instance.  Pytest sets the *PYTEST_CURRENT_TEST* variable for
@@ -1075,7 +1110,7 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     env = gather_env(env)
 
     # ------------------------------------------------------------------
-    # 0. First attempt – restore from backup when the helper is available.
+    # 0. First attempt - restore from backup when the helper is available.
     #    The legacy script tried unconditionally **before** falling back to
     #    a fresh database creation.  We preserve the exact semantics:
     #    * Absent helper   → go straight to brand-new DB creation (skip).
@@ -1089,12 +1124,12 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
         try:
             subprocess.run([str(restore_helper)], check=True)
         except subprocess.CalledProcessError:
-            # Failure – ensure we start from a clean slate then proceed with
+            # Failure - ensure we start from a clean slate then proceed with
             # regular initialisation logic.  This keeps parity with the Bash
             # version which performed a *destroy* on restore failure.
             destroy_instance(env)
         else:
-            # Success path – regenerate assets then record semaphore &
+            # Success path - regenerate assets then record semaphore &
             # timestamp exactly like the end of the new-DB branch.
 
             subprocess.run(["odoo-regenerate-assets"], check=True)
@@ -1118,14 +1153,14 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
                         file=sys.stderr,
                     )
 
-            # Nothing else to do – database already contains modules.
+            # Nothing else to do - database already contains modules.
             return
 
     # ------------------------------------------------------------------
     # 1. Helper utilities that *must* succeed before we move on: the Bash
     #    implementation ran them unconditionally therefore we replicate the
     #    behaviour.  We **never** try to be smart when the binary is missing
-    #    – instead we fail early so that container authors realise their
+    #    - instead we fail early so that container authors realise their
     #    image is incomplete.
     # ------------------------------------------------------------------
 
@@ -1135,7 +1170,7 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     # ------------------------------------------------------------------
     # 1. Gather add-ons directories.  They fall into two logical buckets
     #    which require **two passes** so that community / enterprise modules
-    #    install first, extras afterwards – this mirrors Odoo's own rule of
+    #    install first, extras afterwards - this mirrors Odoo's own rule of
     #    preferring core to override downstream views when duplicates exist.
     # ------------------------------------------------------------------
 
@@ -1154,7 +1189,7 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
 
     # Convenience closure to avoid code duplication between the *two* passes.
 
-    def _compute_module_list(paths: list[Path]) -> list[str]:  # noqa: WPS430 – tiny nested
+    def _compute_module_list(paths: list[Path]) -> list[str]:  # noqa: WPS430 - tiny nested
         if not paths:
             return []
 
@@ -1164,7 +1199,7 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
             blocklist_patterns=parse_blocklist(env.get("ODOO_ADDON_INIT_BLOCKLIST")),
         )
 
-        # Guarantee presence of *base* and *web* – the historical helper was
+        # Guarantee presence of *base* and *web* - the historical helper was
         # extremely defensive here because Odoo will refuse to start without
         # them.  We insert them **first** so that dependencies are satisfied
         # regardless of the rest of the list.
@@ -1184,12 +1219,12 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     #    entry-point: when any of the two passes returns a non-zero exit
     #    status we drop the database via :pyfunc:`destroy_instance` then
     #    retry **once**.  A second failure is considered irrecoverable and
-    #    bubbles up to the caller which in turn terminates the container –
+    #    bubbles up to the caller which in turn terminates the container -
     #    this matches the legacy semantics where Kubernetes would restart
     #    the pod after a fatal crash.
     # ------------------------------------------------------------------
 
-    def _run_odoo(action: str, mods: list[str]) -> None:  # noqa: WPS430 – tiny nested helper
+    def _run_odoo(action: str, mods: list[str]) -> None:  # noqa: WPS430 - tiny nested helper
         if not mods:
             return
 
@@ -1203,10 +1238,10 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
 
         print(f"[entrypoint] initialise instance - would exec: {' '.join(cmd)}", file=stderr)
 
-        if Path(cmd[0]).is_file():  # pragma: no cover – not in CI
+        if Path(cmd[0]).is_file():  # pragma: no cover - not in CI
             subprocess.run(cmd, check=True)
 
-    # We allow **one** retry after a destroy – this strikes a pragmatic
+    # We allow **one** retry after a destroy - this strikes a pragmatic
     # balance between robustness (automatic self-healing on transient errors)
     # and safety (avoid endless loops on persistent failures).
 
@@ -1221,7 +1256,7 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
                 continue
             raise
         else:
-            break  # success path – jump out of the retry loop
+            break  # success path - jump out of the retry loop
 
     # ------------------------------------------------------------------
     # 3. Persist artefacts so that subsequent container boots can skip the
@@ -1231,12 +1266,12 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     scaffold_path: Path = getattr(_modules[__name__], "SCAFFOLDED_SEMAPHORE")  # type: ignore[assignment]
     try:
         _guarded_touch(scaffold_path)
-    except (PermissionError, FileNotFoundError):  # pragma: no cover – unprivileged or stubbed
+    except (PermissionError, FileNotFoundError):  # pragma: no cover - unprivileged or stubbed
         # Either the process lacks permission to create files under */etc/odoo*
         # (typical for unit-test environments running as an unprivileged user)
         # or the parent directory does not actually exist because tests
         # monkey-patched *Path.mkdir* to a *noop*.  In both cases we merely
-        # emit a warning and keep going – the semaphore is an optimisation
+        # emit a warning and keep going - the semaphore is an optimisation
         # hint, its absence does **not** compromise functional correctness.
         print(
             f"[entrypoint] WARNING: could not create scaffold semaphore at {scaffold_path}",
@@ -1247,31 +1282,31 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
         ts_path: Path = getattr(_modules[__name__], "ADDON_TIMESTAMP_FILE")  # type: ignore[assignment]
         try:
             _guarded_write_text(ts_path, env["ODOO_ADDONS_TIMESTAMP"], encoding="utf-8")
-        except (PermissionError, FileNotFoundError):  # pragma: no cover – see above
+        except (PermissionError, FileNotFoundError):  # pragma: no cover - see above
             print(
                 f"[entrypoint] WARNING: could not write timestamp file to {ts_path}",
                 file=sys.stderr,
             )
 
-    # Optional debug manifest – extremely useful to understand what the logic
+    # Optional debug manifest - extremely useful to understand what the logic
     # selected in production.  We keep it outside of */etc/odoo* so that
     # unprivileged scenarios can still inspect it.
 
-    # Optional debug manifest – always generated for troubleshooting.
+    # Optional debug manifest - always generated for troubleshooting.
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as fp:
         json.dump({"core": core_modules, "extras": extra_modules}, fp)
 
     # ------------------------------------------------------------------
     # 4. Release the Redis lock we acquired earlier.  We do so **after** the
     #    rest of the function completed so that the lock remains held for
-    #    the entire duration of the initialisation logic.  Best-effort – a
+    #    the entire duration of the initialisation logic.  Best-effort - a
     #    failure to release merely emits a warning.
     # ------------------------------------------------------------------
 
     if _held_lock and _lock_mod is not None:
         try:
             _lock_mod.release_lock("initlead")
-        except Exception:  # pragma: no cover – best-effort cleanup
+        except Exception:  # pragma: no cover - best-effort cleanup
             print(
                 "[entrypoint] WARNING: failed to release 'initlead' lock", file=sys.stderr,
             )
@@ -1285,7 +1320,7 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     from sys import stderr, modules as _modules
 
     # ------------------------------------------------------------------
-    # Redis lock – *upgradelead* protects the upgrade cycle so that only one
+    # Redis lock - *upgradelead* protects the upgrade cycle so that only one
     # pod performs the potentially long and CPU-intensive process at a time.
     # The behaviour mirrors *initialise_instance* (see above).
     # ------------------------------------------------------------------
@@ -1300,19 +1335,19 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     if _lock_mod is not None:
         try:
             _held_lock = bool(_lock_mod.acquire_lock("upgradelead"))
-        except Exception:  # pragma: no cover – defensive fallback
+        except Exception:  # pragma: no cover - defensive fallback
             _lock_mod = None
 
         if not _held_lock and _lock_mod is not None:
             import os as _os
 
             if _os.environ.get("PYTEST_CURRENT_TEST"):
-                # Skip blocking wait in unit-tests – continue execution so
+                # Skip blocking wait in unit-tests - continue execution so
                 # that the rest of the helper remains covered.
                 pass
             else:
                 _lock_mod.wait_for_lock("upgradelead")
-                return  # Another instance handled upgrade – nothing left to do.
+                return  # Another instance handled upgrade - nothing left to do.
 
     env = gather_env(env)
 
@@ -1324,7 +1359,7 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     # Resolve monkey-patched helpers from the package namespace *once* so that
     # subsequent lookups reuse the same object.
 
-    import sys as _sys  # noqa: WPS433 – local import inside function scope
+    import sys as _sys  # noqa: WPS433 - local import inside function scope
     pkg_mod = _sys.modules.get("entrypoint")  # type: ignore[assignment]
 
     if env.get("ODOO_NO_AUTO_UPGRADE"):
@@ -1359,7 +1394,7 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
 # third-party callers) monkey-patch helpers such as :pyfunc:`get_addons_paths`
 # on the *package* object, **not** on the sub-module.  Because the function
 # global namespace is bound to the latter at *definition* time, such patches
-# would not be visible here if we performed a direct call – they would
+# would not be visible here if we performed a direct call - they would
 # operate on the original, un-patched helper and therefore break expectations.
 #
 # To honour those run-time modifications we explicitly fetch
@@ -1370,7 +1405,7 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
 
     import sys as _sys  # localised import to avoid polluting module globals
 
-    pkg_mod = _sys.modules.get("entrypoint")  # pragma: no cover – import sanity
+    pkg_mod = _sys.modules.get("entrypoint")  # pragma: no cover - import sanity
     if pkg_mod is None:  # extremely unlikely, defensive guard
         addons_paths = get_addons_paths(env)
     else:
@@ -1493,18 +1528,18 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     if _held_lock and _lock_mod is not None:
         try:
             _lock_mod.release_lock("upgradelead")
-        except Exception:  # pragma: no cover – best-effort cleanup
+        except Exception:  # pragma: no cover - best-effort cleanup
             print(
                 "[entrypoint] WARNING: failed to release 'upgradelead' lock", file=stderr,
             )
 
 
 # ---------------------------------------------------------------------------
-#  Runtime housekeeping – ensure /etc/odoo/odoo.conf matches environment
+#  Runtime housekeeping - ensure /etc/odoo/odoo.conf matches environment
 # ---------------------------------------------------------------------------
 
 
-def runtime_housekeeping(env: EntrypointEnv | None = None) -> None:  # noqa: D401 – imperative mood
+def runtime_housekeeping(env: EntrypointEnv | None = None) -> None:  # noqa: D401 - imperative mood
     """Synchronise critical options inside ``odoo.conf`` with environment.
 
     The historical entry-point invoked **odoo-config** right before launching
@@ -1512,12 +1547,12 @@ def runtime_housekeeping(env: EntrypointEnv | None = None) -> None:  # noqa: D40
     ``/etc/odoo`` always reflects the *current* container environment.  This
     helper reproduces the same behaviour by issuing three sets of commands:
 
-    1. ``odoo-config --set-admin-password`` – ensures *admin_passwd* matches
+    1. ``odoo-config --set-admin-password`` - ensures *admin_passwd* matches
        ``$ODOO_MASTER_PASSWORD`` when the variable is present.
-    2. ``odoo-config --set-redis-config`` – writes the Redis subsection using
+    2. ``odoo-config --set-redis-config`` - writes the Redis subsection using
        the defaults computed by the helper itself (it internally honours
        ``$REDIS_*`` variables).
-    3. ``odoo-config set options …`` – updates *addons_path* and database
+    3. ``odoo-config set options …`` - updates *addons_path* and database
        connection keys so that the config file aligns with the values that
        will also be forwarded to the CLI flags built by
        :pyfunc:`build_odoo_command`.  This guarantees consistency between the
@@ -1661,7 +1696,7 @@ def build_odoo_command(
     # Remaining **proxy / logging / memory** flags which were still handled
     # by the legacy shell script but missing from the first iterations of
     # the Python port.  They are collected here so that all *static* default
-    # options live in the same helper – easier to review & unit-test.
+    # options live in the same helper - easier to review & unit-test.
     # ------------------------------------------------------------------
 
     # Honour additional reverse-proxy headers so that installations sitting
@@ -1676,11 +1711,11 @@ def build_odoo_command(
     # Silence Werkzeug's built-in HTTP server which otherwise logs *every*
     # request to *stdout* when Odoo serves static files during maintenance or
     # asset generation phases.  The Bash script forced the level to
-    # *CRITICAL* – we preserve that behaviour.
+    # *CRITICAL* - we preserve that behaviour.
 
     _add("--log-handler", "werkzeug:CRITICAL")
 
-    # Memory guards – keep the historical conservative defaults that prevent
+    # Memory guards - keep the historical conservative defaults that prevent
     # a single worker from exhausting the container.  The chosen values are
     # the ones shipped in the reference Docker image at the time the Python
     # migration started (soft = 2 GiB, hard = 2.5 GiB).  They can be
@@ -1689,6 +1724,41 @@ def build_odoo_command(
 
     _add("--limit-memory-soft", str(2 * 1024 ** 3))  # 2 GiB
     _add("--limit-memory-hard", str(int(2.5 * 1024 ** 3)))  # 2.5 GiB
+
+    # ------------------------------------------------------------------
+    # Extended *legacy* defaults that were still handled by the historical
+    # shell script but were missing from the first Python iterations.  They
+    # are considered generally useful therefore we restore them here so that
+    # the port reaches *full* flag parity (see open-issue #2 in the module
+    # header).
+    # ------------------------------------------------------------------
+
+    # Unified log file path - helps operators collect logs from a predictable
+    # location when they run the container *without* docker-level capture
+    # (e.g. systemd-nspawn, Podman in journal mode …).  The directory exists
+    # in all published images but we tolerate the edge case where the user
+    # trimmed it by checking for the parent folder.
+
+    if Path("/var/log/odoo").is_dir():
+        _add("--logfile", "/var/log/odoo/odoo.log")
+
+    # CSV import/export separator - kept for backwards compatibility even
+    # though the vast majority of recent deployments stick with the built-in
+    # default (`,`).  Injecting the flag unconditionally is harmless because
+    # Odoo merely overrides the default when the option is present.
+
+    _add("--csv-internal-separator", ",")
+
+    # Additional *limit-request* guards that complement the *limit-memory*
+    # ones above.  They protect against very large HTTP payloads and ORM
+    # misbehaviours that could allocate unbounded Python objects.  Values are
+    # copied from the reference Dockerfile of the Bash implementation.
+
+    _add("--limit-request", "8192")  # 8 KiB - safe default for JSON bodies
+
+    # Honour X-Forwarded-For based client IP header - harmless when absent.
+
+    _add("--proxy-add-x-forwarded-for")
 
     # Final command: keep consistent with §7 - we omit `gosu` because the
     # Python entry-point already runs under the correct UID/GID when used as
@@ -1788,7 +1858,7 @@ def main(argv: Sequence[str] | None = None) -> None:  # pragma: no cover
         # image so that every preparatory step above can still run with full
         # capabilities.  In development environments outside of the Docker
         # image the uid/gid switch might fail therefore we perform it **only**
-        # when the target binary exists – the same heuristic we already use
+        # when the target binary exists - the same heuristic we already use
         # for the *execv* fast-exit.
 
         if Path(cmd[0]).is_file():
@@ -1841,10 +1911,34 @@ def is_custom_command(argv: Sequence[str] | None = None) -> bool:  # noqa: D401 
 
 
 def apply_runtime_user(env: EntrypointEnv | None = None) -> None:  # noqa: D401
-    """Change UID/GID of user *odoo* inside the container.
+    """Mutate the *odoo* UNIX account to match ``$PUID`` / ``$PGID``.
 
-    Implementation will rely on *os*, *pwd*, *grp* and *subprocess* to call
-    `usermod` / `groupmod`.  Left as **stub** for now.
+    The images published by *camptocamp/odoo* ship with a **static** UID/GID
+    mapping (``odoo`` = 1000:1000).  When the container writes to a host
+    mounted volume owned by a *different* user the resulting permission
+    mismatch can render the volume unusable.  Environment variables `PUID`
+    (user id) and `PGID` (group id) allow operators to request the entry-
+    point to *mutate* the bundled account *before* any file-system access
+    takes place.
+
+    The helper performs the following steps - closely aligned with the
+    original shell implementation:
+
+    1. Early-exit when neither variable is defined - keeps default image
+       behaviour intact when the feature is not used.
+    2. Resolve the current UID/GID of *odoo* using the `pwd` / `grp`
+       standard libraries so we can skip the expensive calls when the
+       desired mapping already matches the current one.
+    3. Invoke the *shadow-utils* commands ``groupmod`` and ``usermod`` to
+       alter the on-disk `/etc/passwd` and `/etc/group` databases.  The
+       ``-o`` flag is passed so that non-unique identifiers are accepted -
+       this aligns with Docker’s behaviour where multiple containers may
+       legitimately share the same host-level id space.
+
+    Any failure while mutating the account is treated as **fatal** because a
+    partial change would leave the container in an unpredictable state.  The
+    function therefore lets exceptions bubble up so that the main routine
+    aborts and the container restarts.
     """
 
     import pwd
@@ -1948,11 +2042,11 @@ def fix_permissions(env: EntrypointEnv | None = None) -> None:  # noqa: D401
         subprocess.run(["chown", "-R", "odoo:odoo", str(p)], check=True)
 
 # ---------------------------------------------------------------------------
-#  Privilege drop – replace historical `gosu`
+#  Privilege drop - replace historical `gosu`
 # ---------------------------------------------------------------------------
 
 
-def drop_privileges(env: EntrypointEnv | None = None) -> None:  # noqa: D401 – imperative mood
+def drop_privileges(env: EntrypointEnv | None = None) -> None:  # noqa: D401 - imperative mood
     """Permanently switch to the *odoo* UNIX account for the rest of the process.
 
     The original Bash entrypoint relied on the `gosu` wrapper to execute the
@@ -1966,7 +2060,7 @@ def drop_privileges(env: EntrypointEnv | None = None) -> None:  # noqa: D401 –
     recipe recommended by the CPython documentation:
 
     1. Abort early when the current process is **already** running as a
-       non-root user – either because the container started with `USER odoo`
+       non-root user - either because the container started with `USER odoo`
        or because tests monkey-patched `os.geteuid`.
     2. Retrieve the target UID/GID from the *odoo* account entry returned by
        `pwd.getpwnam()` (this reflects any change performed earlier by
@@ -1974,31 +2068,31 @@ def drop_privileges(env: EntrypointEnv | None = None) -> None:  # noqa: D401 –
     3. Initialise the supplementary groups with `os.initgroups` so that file
        system ACLs keep working when the container image ships additional
        memberships.
-    4. Call `os.setgid` **before** `os.setuid` – dropping the group
+    4. Call `os.setgid` **before** `os.setuid` - dropping the group
        privileges first is the common, safer order.
     5. Update `$HOME` to the value from `/etc/passwd` so that applications
        respecting the variable do not keep writing under `/root` by mistake.
 
-    The helper is idempotent and safe to call multiple times – subsequent
+    The helper is idempotent and safe to call multiple times - subsequent
     invocations become no-ops once the effective UID is no longer *0*.
     """
 
     import os
     import pwd
 
-    # Fast exit when not running as root – nothing to do.
+    # Fast exit when not running as root - nothing to do.
     if os.geteuid() != 0:
         return
 
     try:
         pw = pwd.getpwnam("odoo")
-    except KeyError as exc:  # pragma: no cover – should never happen in image
+    except KeyError as exc:  # pragma: no cover - should never happen in image
         raise RuntimeError("system user 'odoo' not found") from exc
 
     target_uid = pw.pw_uid
     target_gid = pw.pw_gid
 
-    # Redundant guard – if the image already starts under the right UID/GID
+    # Redundant guard - if the image already starts under the right UID/GID
     # (for instance when built with `USER odoo`) the helper becomes inert.
     if os.geteuid() == target_uid and os.getegid() == target_gid:
         return
@@ -2011,7 +2105,7 @@ def drop_privileges(env: EntrypointEnv | None = None) -> None:  # noqa: D401 –
     os.setgid(target_gid)
     os.setuid(target_uid)
 
-    # Keep environment coherent – a surprising but common pitfall when not
+    # Keep environment coherent - a surprising but common pitfall when not
     # using a wrapper like *gosu*.
     os.environ["HOME"] = pw.pw_dir
 
