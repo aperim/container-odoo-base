@@ -40,7 +40,8 @@ def test_build_cmd_injects_proxy_flags(monkeypatch):  # noqa: D401 – imperativ
     flags = _flags(cmd)
 
     assert "--proxy-mode" in flags
-    assert "--proxy-ssl-header" in flags
+# The historical *proxy-ssl-header* flag never belonged to the official Odoo
+# CLI and has been removed from the entry-point defaults.
 
 
 def test_build_cmd_no_duplicate_when_user_supplies(monkeypatch):  # noqa: D401

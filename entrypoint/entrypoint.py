@@ -96,7 +96,7 @@ script *production-ready*:
    --addons-path                    | Add-ons discovery           | ✓   | ✗    | ✗  | automatic default when paths exist
    --admin-passwd                   | Security                    | ✓   | ✗    | ✓  | reads $ODOO_ADMIN_PASSWORD
    --auto-reload                    | Development / hot-reload    | ✗   | ✗    | ✗  | mostly dev, low prio for prod images
-   --csv-internal-separator         | CSV import/export           | ✓   | ✗    | ✗  | default injected (",")
+   # --csv-internal-separator (dropped – not part of 7.1)
    --data-dir                       | Filestore location          | ✗   | ✗    | ✗  | default is inside container; make configurable
    --db_host                        | PostgreSQL                  | ✓   | ✗    | ✓  | $POSTGRES_HOST / $PGBOUNCER_HOST
    --db_port                        | PostgreSQL                  | ✓   | ✗    | ✓  | $POSTGRES_PORT
@@ -128,10 +128,9 @@ script *production-ready*:
    --pidfile                        | Process supervision         | ✗   | ✗    | ✗  |
    --pg-path                        | PostgreSQL binaries         | ✗   | ✗    | ✗  |
    --proxy-mode                     | Reverse proxy               | ✓   | ✗    | ✗  | enabled by default
-   --proxy-ssl-header               | Reverse proxy               | ✓   | ✗    | ✗  | added by default
-   --proxy-add-x-forwarded-port     | Reverse proxy               | ✓   | ✗    | ✗  |
-   --proxy-add-x-forwarded-host     | Reverse proxy               | ✓   | ✗    | ✗  |
-   --proxy-add-x-forwarded-for      | Reverse proxy               | ✓   | ✗    | ✗  |
+   # The experimental *proxy-ssl-header* and *proxy-add-x-forwarded-* helper
+   # flags were never part of Odoo's official CLI and have therefore been
+   # removed to honour the exhaustive 7.1 reference list.
    --reportgz                       | Reporting                   | ✗   | ✗    | ✗  |
    --smtp-server                    | SMTP                        | ✗   | ✗    | ✗  | expose $SMTP_SERVER (default localhost)
    --smtp-port                      | SMTP                        | ✗   | ✗    | ✗  | expose $SMTP_PORT (25)
@@ -1748,8 +1747,16 @@ def build_odoo_command(
     # that absolute URLs are generated with *https* when the upstream proxy
     # terminates TLS).
 
+    # Enable reverse-proxy support so that Odoo correctly processes
+    # X-Forwarded-* headers when it sits behind a trusted proxy.  Only the
+    # canonical ``--proxy-mode`` flag exists in Odoo ≥14.0; auxiliary helper
+    # switches that were present in the historical Bash script (e.g.
+    # ``--proxy-ssl-header`` or the various ``--proxy-add-x-forwarded-*``)
+    # were never part of the official CLI and have therefore been dropped to
+    # restore strict parity with the *exhaustive* 7.1 reference list from
+    # ENTRYPOINT.md.
+
     _add("--proxy-mode")
-    _add("--proxy-ssl-header", "X-Forwarded-Proto,https")
 
     # GeoIP - injected only when the standard database shipped with the
     # image is present on disk.  This mirrors the opt-in behaviour of the
@@ -1783,8 +1790,9 @@ def build_odoo_command(
     # does not supply the headers therefore enabling them unconditionally is
     # safe.  The user can still override/disable them explicitly if needed.
 
-    _add("--proxy-add-x-forwarded-port")
-    _add("--proxy-add-x-forwarded-host")
+    # ------------------------------------------------------------------
+    # The additional *proxy-add-x-forwarded-* helpers were removed – they do
+    # not exist in the authoritative 7.1 ``--help`` output.
 
     # Silence Werkzeug's built-in HTTP server which otherwise logs *every*
     # request to *stdout* when Odoo serves static files during maintenance or
@@ -1833,7 +1841,8 @@ def build_odoo_command(
     # default (`,`).  Injecting the flag unconditionally is harmless because
     # Odoo merely overrides the default when the option is present.
 
-    _add("--csv-internal-separator", ",")
+    # The historical Bash script forced a particular CSV separator, however
+    # that flag is not advertised by the official CLI and thus removed.
 
     # Additional *limit-request* guards that complement the *limit-memory*
     # ones above.  They protect against very large HTTP payloads and ORM
@@ -1842,9 +1851,8 @@ def build_odoo_command(
 
     _add("--limit-request", "8192")  # 8 KiB - safe default for JSON bodies
 
-    # Honour X-Forwarded-For based client IP header - harmless when absent.
-
-    _add("--proxy-add-x-forwarded-for")
+    # ``--proxy-add-x-forwarded-for`` is not part of the official CLI –
+    # dropped to remain strictly within the supported option set.
 
     # ------------------------------------------------------------------
     # Security - master/admin password

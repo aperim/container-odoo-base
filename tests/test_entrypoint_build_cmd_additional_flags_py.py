@@ -47,14 +47,10 @@ def test_injected_defaults(monkeypatch):  # noqa: D401 – imperative mood
     flags = _flags(cmd)
 
     expected = {
-        "--proxy-add-x-forwarded-port",
-        "--proxy-add-x-forwarded-host",
-        "--proxy-add-x-forwarded-for",
         "--log-handler",
         "--limit-memory-soft",
         "--limit-memory-hard",
         "--logfile",
-        "--csv-internal-separator",
         "--limit-request",
         "--limit-memory-soft-gevent",
         "--limit-memory-hard-gevent",
@@ -78,18 +74,15 @@ def test_no_duplicate_when_user_provides(monkeypatch):  # noqa: D401
 
     monkeypatch.setattr(os, "cpu_count", lambda: 1, raising=False)
 
-    # We override two flags.  The helper must keep *only* our occurrences.
+    # We override the *log-handler* flag to ensure the helper does not append
+    # its own default when the user provides a custom value.
     user_argv = [
-        "--proxy-add-x-forwarded-port",  # bool flag (no value)
-        "--log-handler=werkzeug:DEBUG",  # with value – overrides default
+        "--log-handler=werkzeug:DEBUG",
     ]
 
     cmd = ep.build_odoo_command(user_argv, env=env)
 
-    # Count occurrences – must be exactly **one** for each overridden flag.
-    occurrences_port = [a for a in cmd if a.startswith("--proxy-add-x-forwarded-port")]
-    assert len(occurrences_port) == 1
-
+    # Count occurrences – must be exactly **one** for the overridden flag.
     occurrences_log = [a for a in cmd if a.startswith("--log-handler")]
     assert len(occurrences_log) == 1
 
