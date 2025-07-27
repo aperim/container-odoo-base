@@ -1,118 +1,133 @@
 <!--
-╔══════════════════════════════════════════════════════════════════╗
-║  FULL‑FILE READ REQUIREMENT                                      ║
-║                                                                  ║
-║  Before doing ANY work Codex MUST:                                ║
-║    1. Count the exact number of lines in *this* file             ║
-║       (blank lines included, this block included).               ║
-║    2. Print ONE line to stdout in this form—                     ║
-║                                                                  ║
-║           AGENTS_LINES_<TOTAL>                                   ║
-║                                                                  ║
-║       where <TOTAL> is the line count it just computed.          ║
-║    3. Abort with a non‑zero exit code if that line is absent     ║
-║       or the count is wrong.                                     ║
-╚══════════════════════════════════════════════════════════════════╝
+╔════════════════════════════════════════════════════════════════════════════╗
+║  !!  FULL‑FILE READ PROTOCOL  !!                                           ║
+║                                                                            ║
+║  Any agent MUST:                                                           ║
+║    1. Read until the literal marker `<!-- AGENT_EOF -->` is seen.          ║
+║    2. Then emit exactly                                                   ║
+║           AGENTS_MD_LOADED                                                ║
+║       to stdout/stderr (either is fine).                                   ║
+║    3. Abort with non‑zero exit if the marker is missing or the            ║
+║       acknowledgement is not printed.                                      ║
+╚════════════════════════════════════════════════════════════════════════════╝
 -->
 
 # AGENTS.md
-Purpose‑built instructions for OpenAI Codex when running **inside this VS Code DevContainer**.  
-These rules **override** any broader‐scope `AGENTS.md` files but are still subordinate to an
-explicit user prompt.
+
+Authoritative operating contract for any **code‑generating agent** inside this
+VS Code **DevContainer** (Ubuntu‑based, Docker‑enabled, full internet).
+
+> These rules override any other AGENTS.md files higher in the tree and any
+> default agent heuristics, unless the user expressly says otherwise.
 
 ---
 
-## 1. Execution Environment
+## 0 · Agent Loop (MUST FOLLOW EVERY TURN)
 
-| Capability                | Status in this container |
-| ------------------------- | ------------------------ |
-| Internet / DNS / TLS      | **Enabled** – outbound and inbound allowed. |
-| GitHub API (REST & GQL)   | **Enabled** – authenticate with `CODEX_GITHUB_TOKEN` or, if absent, `GITHUB_TOKEN`. |
-| Shell & process exec      | **Enabled** – unrestricted by Seatbelt/Landlock. |
-| File‑system write         | **Enabled** in the repo working tree. |
-| Docker                    | **Enabled** use `docker` commands for container management. |
-| GPU                       | Available. |
-
-> **Implication:** *Do **not** assume `CODEX_SANDBOX_NETWORK_DISABLED=1`; the variable will not be set here. Skip any network‑avoidance fall‑backs.*
-
----
-
-## 2. Branch‑safety Rules
-
-1. **Never commit to `main`.**  
-   *If the current HEAD is `main`, first create*  
-   `codex/<keyword>-<YYYYMMDD>-<slug>`  
-   before touching files or running generators.
-
-2. If you are already on a non‑main branch, continue work there.
-
-3. Every change set **must be committed** (and pushed if credentials permit)
-   **before** the agent yields control at the end of its run.  
-   Follow the conventional commit template:
-
-```
-
-<type>(scope): concise summary
-
-Longer description explaining *why* rather than *what*,
-followed by any BREAKING CHANGE or issue/PR references.
-
+1. **Sync workspace state**  
+   ```bash
+   git fetch --all --prune
 ````
 
----
+2. **Ensure safe branch**
 
-## 3. Documentation Synchronisation
+   * If `git rev‑parse --abbrev‑ref HEAD` equals `main` (or `master`), create
+     `agent/<topic>‑$(date +%Y%m%d%H%M%S)` and switch to it **before** edits.
+3. **Apply user instructions**
 
-* **Live‑update docs.** When a code/file change alters behaviour, update the
-relevant Markdown, code headers, or GitHub Issue/PR description **in the
-same task**, not afterwards.
-* Respect any `--doc-path` or “update the spec in #123” instructions that the
-user supplies.
-* Run spell‑check/linters on docs if the repo provides them.
+   * Make code changes **and** update all referenced docs *concurrently*.
+4. **Quality gates** (stop on failure)
 
----
+   * Run formatter / linter (`just fix`, `npm run lint`, etc.).
+   * Run test suite (`pytest`, `go test ./...`, `cargo test`, …).
+   * Containers: `docker compose build && docker compose up --exit-code-from sut`.
+5. **Stage & commit**
 
-## 4. GitHub Workflow Automation
+   ```bash
+   git add -A
+   git commit -m "<type>(scope): summary\n\nLonger context\n\nCloses #123"
+   ```
+6. **Push**
 
-* Use the **GraphQL API** for:
-* creating / updating Issues & PRs,
-* adding comments, labels, reviewers,
-* checking build‑status queries.
-* Prefer batched GraphQL mutations for speed.
-* Authenticate with:
-```bash
-export GH_TOKEN="${CODEX_GITHUB_TOKEN:-$GITHUB_TOKEN}"
-````
+   ```bash
+   git push --set-upstream origin $(git symbolic-ref --short HEAD)
+   ```
 
-* Push branches with `--set-upstream origin <branch>` so subsequent runs know
-  where to commit.
+   *If push fails (e.g., new repo), create the remote branch and retry.*
+7. **Log confirmation**
+   Print `AGENT_COMMIT_DONE_<short‑sha>` and only then yield control.
 
----
-
-## 5. Tooling Guidance for Codex
-
-* You **can** run linters, tests, package managers (Yarn, Cargo, etc.).
-* Feel free to download dependencies or call external APIs; bandwidth is not
-  sandboxed.
-* Honour repo‑local config: `.editorconfig`, `justfile`, `pre‑commit`, etc.
-* Do **not** add or modify any code that special‑cases
-  `CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR`; it is **irrelevant** here.
+*If no file changed during the turn, skip steps 4‑6 and print
+`AGENT_NO_CHANGE` instead.*
 
 ---
 
-## 6. Quality Gates
+## 1 · Execution Environment
 
-1. **All tests green** (`cargo test`, `pytest`, `npm test`…)
-   Commit fails should abort the run.
-2. **Static checks** (`just fix`, `just fmt`, `eslint --fix`, etc.) must pass.
-3. Use the repo’s CI config (if any) as the source‑of‑truth – run it locally when practical.
+| Capability           | Status                                                              |
+| -------------------- | ------------------------------------------------------------------- |
+| Internet + DNS + TLS | **ON** – no egress blocks.                                          |
+| GitHub REST/GQL API  | **ON** – token via `AGENT_GITHUB_TOKEN` or fallback `GITHUB_TOKEN`. |
+| Shell / subprocess   | **ON** – unrestricted inside workspace.                             |
+| Docker‑in‑Docker     | **ON** (`docker` CLI available).                                    |
+| GPU / CUDA           | Available if installed – ask user first.                            |
+
+*Ignore any framework defaults like `SANDBOX_NETWORK_DISABLED`; they do not
+apply in this container.*
 
 ---
 
-## 7. Etiquette & Precedence
+## 2 · Documentation Discipline
 
-* Obey direct user instructions first.
-  If unclear, ask a clarifying question **once** before proceeding.
-* If multiple `AGENTS.md` files conflict, the *closest one in the directory
-  tree wins* (per upstream spec).
-  This file is at repo root, so only nested files may override it.
+* Update **as‑you‑go**, not after.
+  If code changes imply doc drift, fix the doc **within the same commit**.
+* Honour explicit doc paths: issue bodies, `/docs/*.md`, code headers, etc.
+* Keep changelogs (`CHANGELOG.md`, GitHub Releases) current if they exist.
+
+---
+
+## 3 · Git & Branch Hygiene
+
+* **Never** touch `main`/`master` directly.
+* Use small, purposeful branches (`agent/feature‑xyz`).
+* Squash or rebase if CI or user policy requires it (check repo settings).
+
+---
+
+## 4 · GitHub Automation
+
+* Prefer **GraphQL v4** for efficiency (batched mutations).
+* Common actions: open PR, link Issues, add reviewers, apply labels.
+* Example token bootstrap:
+
+  ```bash
+  export GH_TOKEN="${AGENT_GITHUB_TOKEN:-$GITHUB_TOKEN}"
+  ```
+* After pushing, if CI passes and the user hasn’t said otherwise, open a PR
+  titled “`feat: <summary>`”.
+
+---
+
+## 5 · Tooling Cheat‑Sheet
+
+| Task        | Command (if tool present)                     |
+| ----------- | --------------------------------------------- |
+| Format code | `rustfmt`, `black`, `gofmt`, `prettier`, etc. |
+| Lint        | `ruff`, `eslint`, `golangci‑lint`, `clippy`   |
+| Tests       | `pytest`, `npm test`, `cargo test`, `go test` |
+| Spell‑check | `codespell`, `mdspell`, `vale`                |
+| Containers  | `docker compose build --pull`                 |
+
+Follow repo‑local wrappers (`just`, `make`, `task`) if provided.
+
+---
+
+## 6 · Precedence & Clarifications
+
+1. **User prompt > This file > Upstream agent defaults.**
+2. If a conflict arises inside this file, **later sections supersede earlier**.
+3. When uncertain, ask the user *once* for guidance, then proceed.
+
+---
+
+<!-- AGENT_EOF -->
