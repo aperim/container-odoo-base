@@ -82,7 +82,7 @@ script *production-ready*:
 
 3. Runtime user mutation
    * `apply_runtime_user()` changes UID/GID but **does not adjust
-     ownership** of the user’s *home directory* (usually `/opt/odoo`).  In
+     ownership** of the user's *home directory* (usually `/opt/odoo`).  In
      images where HOME resides outside the paths touched by
      `fix_permissions()` this can leave stray root-owned files.
 
@@ -1135,7 +1135,7 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     # ------------------------------------------------------------------
     # 1. Gather add-ons directories.  They fall into two logical buckets
     #    which require **two passes** so that community / enterprise modules
-    #    install first, extras afterwards – this mirrors Odoo’s own rule of
+    #    install first, extras afterwards – this mirrors Odoo's own rule of
     #    preferring core to override downstream views when duplicates exist.
     # ------------------------------------------------------------------
 
@@ -1673,7 +1673,7 @@ def build_odoo_command(
     _add("--proxy-add-x-forwarded-port")
     _add("--proxy-add-x-forwarded-host")
 
-    # Silence Werkzeug’s built-in HTTP server which otherwise logs *every*
+    # Silence Werkzeug's built-in HTTP server which otherwise logs *every*
     # request to *stdout* when Odoo serves static files during maintenance or
     # asset generation phases.  The Bash script forced the level to
     # *CRITICAL* – we preserve that behaviour.
