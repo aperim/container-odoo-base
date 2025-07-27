@@ -265,22 +265,60 @@ def compute_workers(cpu_count: int | None = None) -> int:  # noqa: D401 - impera
 
 
 def compute_http_interface(version: int | str | None) -> str:  # noqa: D401 - imperative mood
-    """Return the default *--http-interface* value for *version*.
+    """Return the default *--http-interface* value for the given *version*.
 
-    Since Odoo 17.0 the server binds to *IPv6* ("::") by default.  Older
-    versions still default to the legacy IPv4 wildcard ("0.0.0.0").  The
-    helper reproduces that behaviour so that the higher level
-    :pyfunc:`build_odoo_command` can stay agnostic of the rule.
+    Rules inherited from the historical Bash helper:
+
+    1. For **Odoo ≥ 17** the server should listen on the IPv6 wildcard "::" –
+       matching the upstream change introduced in 17.0.
+    2. For versions **< 17** the legacy IPv4 wildcard "0.0.0.0" is kept.
+    3. When *version* is *None* or cannot be parsed as an ``int`` the helper
+       attempts to **auto-detect** the running Odoo major version by invoking
+       ``odoo --version`` which prints a banner similar to ``odoo 17.0``.
+    4. If automatic detection fails (binary unavailable, unexpected output…)
+       we fall back to the *safest* option which is the IPv4 wildcard.
     """
 
+    import subprocess
+
+    # ------------------------------------------------------------------
+    # 1. Fast-path – caller already supplied a usable integer-like value.
+    # ------------------------------------------------------------------
     try:
         ver_int = int(version)  # type: ignore[arg-type]
     except (TypeError, ValueError):
-        # Garbage or *None* → fall back to legacy behaviour which is the most
-        # conservative option.
-        return "0.0.0.0"
+        ver_int = None  # will try auto-detection below
 
-    return "::" if ver_int >= 17 else "0.0.0.0"
+    # ------------------------------------------------------------------
+    # 2. Auto-detect when the parameter was *None* or invalid.
+    # ------------------------------------------------------------------
+    if ver_int is None:
+        try:
+            # The real binary may reside under various paths depending on the
+            # image variant (e.g. /usr/bin/odoo, /opt/odoo/odoo-bin…).  The
+            # *sh*-style wrapper shipped in the official images is available
+            # as the simple executable `odoo` therefore we rely on PATH
+            # resolution here – tests monkey-patch *subprocess.check_output*
+            # so the exact command string remains irrelevant.
+            output = subprocess.check_output(["odoo", "--version"], stderr=subprocess.STDOUT, text=True)
+
+            # Extract the leading integer which corresponds to the major
+            # version – tolerate additional suffixes such as "+e".
+            match = re.search(r"(\d+)", output)
+            if match:
+                ver_int = int(match.group(1))
+        except (subprocess.SubprocessError, FileNotFoundError, ValueError):  # pragma: no cover – real binary absent
+            ver_int = None  # detection failed – will fall through
+
+    # ------------------------------------------------------------------
+    # 3. Decide according to the rules laid out above.
+    # ------------------------------------------------------------------
+    if ver_int is not None and ver_int >= 17:
+        return "::"
+
+    # Either the version is < 17 **or** detection failed – both lead to the
+    # conservative IPv4 wildcard which mirrors pre-17 behaviour.
+    return "0.0.0.0"
 
 
 def get_addons_paths(env: EntrypointEnv | Mapping[str, str] | None = None) -> list[str]:  # noqa: D401
@@ -806,6 +844,16 @@ def wait_for_dependencies(env: EntrypointEnv | None = None) -> None:  # noqa: D4
     #    required.
 
     env = gather_env(env)
+
+    # ------------------------------------------------------------------
+    # Allow operators to explicitly disable the potentially heavy recursive
+    # *chown* pass when they know permissions are already correct.  This
+    # mirrors the historical `ODOO_SKIP_CHOWN` toggle that was previously
+    # handled in the shell implementation (open issue #3).
+    # ------------------------------------------------------------------
+
+    if env.get("ODOO_SKIP_CHOWN") and env["ODOO_SKIP_CHOWN"].lower() in {"1", "true", "yes", "on"}:
+        return  # requested – do nothing
 
     # Allow power-users to explicitly disable the potentially expensive
     # recursive *chown* walk when they know file-system permissions are
