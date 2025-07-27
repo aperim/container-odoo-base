@@ -54,18 +54,6 @@ or update the table whenever a stub evolves - it is intended to be a living
 document that bridges the gap between the original shell logic and the Python
 implementation.
 
-Pending functional gaps – to be addressed before production roll-out
--------------------------------------------------------------------
-The Python port is feature-rich but **not yet a drop-in replacement** for the
-legacy shell script.  The following items still need work and are *deliberately*
-left out of scope for the current merge request:
-
-✔  All previously missing proxy & logging flags have now been implemented –
-   `build_odoo_command()` injects the same defaults as the historical Bash
-   entry-point (`--proxy-add-x-forwarded-*`, `--log-handler`, in-container
-   memory guards, …).  The helper keeps the **override** semantics unchanged
-   so that user-supplied options always take priority.
-
 Keep the list in sync as further gaps are addressed.
 """
 
@@ -790,7 +778,6 @@ def _runtime_housekeeping_impl(env: EntrypointEnv) -> None:  # noqa: D401 – in
     import sys as _sys  # localised import to avoid polluting module globals
 
     pkg_mod = _sys.modules.get("entrypoint")  # pragma: no cover – import sanity
-
 
     # ------------------------------------------------------------------
     # Wait for Redis - we do not forward any parameter because the helper
