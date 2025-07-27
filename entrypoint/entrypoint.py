@@ -55,6 +55,74 @@ document that bridges the gap between the original shell logic and the Python
 implementation.
 
 Keep the list in sync as further gaps are addressed.
+
+Open issues / TODO (v0.5)
+-------------------------
+The port is **now feature-complete for the most common production
+scenarios** and the whole test-suite passes, yet a handful of corner cases
+and quality topics still need attention before we can confidently stamp the
+script *production-ready*:
+
+1. Documentation consistency
+   * Several **function-level doc-strings** (e.g. `wait_for_dependencies`,
+     `destroy_instance`, `apply_runtime_user`) still describe the helpers as
+     *stubs* even though they have since gained full implementations.  They
+     must be rewritten so user-facing documentation does not diverge from
+     reality.
+
+2. Exhaustive default flag coverage
+   * `build_odoo_command()` now injects the majority of flags handled by the
+     original shell script but we have **not yet audited** the following
+     legacy options.  They should be reviewed and, if still relevant,
+     ported or explicitly deprecated:
+       - `--logfile /var/log/odoo/odoo.log` default path.
+       - `--csv-internal-separator` & other import/export parameters.
+       - Fine-grained `--limit-request/*` memory guards.
+       - `--proxy-mode` additional header variants (`proto`, `ip`).
+
+3. Runtime user mutation
+   * `apply_runtime_user()` changes UID/GID but **does not adjust
+     ownership** of the user’s *home directory* (usually `/opt/odoo`).  In
+     images where HOME resides outside the paths touched by
+     `fix_permissions()` this can leave stray root-owned files.
+
+4. Permission fixer edge-cases
+   * `fix_permissions()` blindly calls `chown -R` which can be *extremely*
+     slow on very large persistent volumes.  Switch to a
+     differential strategy (e.g. `chown --from`) AND allow users to opt
+     out through an environment variable.
+
+5. Dependency wait helpers
+   * The function correctly delegates to external binaries but we still
+     rely on the *best-effort* fall-back behaviour when those helpers are
+     absent.  Production images should fail fast.
+
+6. `compute_http_interface()` default
+   * The helper reads the Odoo major version from `ODOO_MAJOR_VERSION` when
+     the caller does not pass an explicit value.  When unavailable, the binary
+     should be used to attempt to determine the version.
+
+7. Red / black semaphore race conditions
+   * We made `_file_lock()` *best-effort* to cope with read-only test
+     environments.  On filesystems where `flock()` is unsupported the
+     script will start without any mutual exclusion which may corrupt
+     semaphores under concurrent starts.  All semaphore locking must
+     support local and remote file systems like gluster and rclone - 
+     ensure file locking is properly implemented for all cases.
+
+8. Type coverage & static analysis
+   * The public API is fully typed, but **mypy** is not yet part of the CI
+     pipeline.  Enable it and fix the (few) remaining `Any` escapes so
+     future regressions are caught early.
+
+9. Backwards compatibility guard-rails
+   * Add optional integration tests that boot *real* Odoo, Redis and Postgres
+     servers inside Docker to validate that the generated command works
+     end-to-end against PostgreSQL and Redis.  The current unit tests rely
+     on heavy monkey-patching which may let subtle incompatibilities slip through.
+
+Maintainers should tackle the items above before advertising the Python
+entry-point as a strict drop-in replacement for the historical `entrypoint.sh`.
 """
 
 from __future__ import annotations
