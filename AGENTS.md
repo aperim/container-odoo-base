@@ -1,14 +1,15 @@
 <!--
 ╔════════════════════════════════════════════════════════════════════════════╗
-║  !!  FULL‑FILE READ PROTOCOL  !!                                           ║
+║  FULL‑FILE READ PROTOCOL                                                   ║
 ║                                                                            ║
 ║  Any agent MUST:                                                           ║
-║    1. Read until the literal marker `<!-- AGENT_EOF -->` is seen.          ║
-║    2. Then emit exactly                                                   ║
-║           AGENTS_MD_LOADED                                                ║
-║       to stdout/stderr (either is fine).                                   ║
-║    3. Abort with non‑zero exit if the marker is missing or the            ║
-║       acknowledgement is not printed.                                      ║
+║    1. Read sequentially until it encounters the line:                      ║
+║         @@@ AGENT_EOF @@@                                                  ║
+║    2. Then immediately print exactly                                       ║
+║         AGENTS_MD_LOADED                                                   ║
+║       to stdout/stderr.                                                    ║
+║    3. Abort with non‑zero exit if the sentinel is missing or               ║
+║       the acknowledgement isn’t printed.                                   ║
 ╚════════════════════════════════════════════════════════════════════════════╝
 -->
 
@@ -130,4 +131,4 @@ Follow repo‑local wrappers (`just`, `make`, `task`) if provided.
 
 ---
 
-<!-- AGENT_EOF -->
+@@@ AGENT_EOF @@@
