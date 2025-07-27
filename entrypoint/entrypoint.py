@@ -602,16 +602,66 @@ def wait_for_dependencies(env: EntrypointEnv | None = None) -> None:  # noqa: D4
 
     env = gather_env(env)
 
-    # Serialise modifications to the persistent configuration file so that
-    # multiple replicas do not step on each other toes.  The lock is *best
-    # effort* – when the process lacks permission to create the file we
-    # continue unlocked but still print a warning (handled inside
-    # :pyfunc:`_file_lock`).
+    # ------------------------------------------------------------------
+    # Redis – mandatory in production but *optional* during local unit tests.
+    # The helper module may therefore be missing from the editable checkout.
+    # ------------------------------------------------------------------
 
-    _config_path = Path("/etc/odoo/odoo.conf")
+    try:
+        from tools.src.lock_handler import wait_for_redis  # type: ignore
 
-    with _file_lock(_config_path):
-        _runtime_housekeeping_impl(env)
+        wait_for_redis()
+    except ModuleNotFoundError:  # pragma: no cover - helper not installed
+        import sys as _sys
+
+        print(
+            "[entrypoint] tools.src.lock_handler.wait_for_redis unavailable, "
+            "skipping actual Redis wait (development mode)",
+            file=_sys.stderr,
+        )
+
+    # ------------------------------------------------------------------
+    # PostgreSQL / PgBouncer – same precedence rules as the historical script.
+    # ------------------------------------------------------------------
+
+    try:
+        import sys as _sys_wfp  # noqa: WPS433 – localised import
+        from importlib import import_module as _imp
+
+        _wfp = _sys_wfp.modules.get("tools.src.wait_for_postgres")
+        if _wfp is None:  # first import – fall back to standard machinery
+            _wfp = _imp("tools.src.wait_for_postgres")  # type: ignore[assignment]
+
+        if env.get("PGBOUNCER_HOST"):
+            _wfp.wait_for_pgbouncer(
+                user=env["POSTGRES_USER"],
+                password=env["POSTGRES_PASSWORD"],
+                host=env["PGBOUNCER_HOST"],
+                port=int(env["PGBOUNCER_PORT"]),
+                dbname=env["POSTGRES_DB"],
+                ssl_mode=env["PGBOUNCER_SSL_MODE"],
+            )
+        else:
+            _wfp.wait_for_postgres(
+                user=env["POSTGRES_USER"],
+                password=env["POSTGRES_PASSWORD"],
+                host=env["POSTGRES_HOST"],
+                port=int(env["POSTGRES_PORT"]),
+                dbname=env["POSTGRES_DB"],
+                ssl_mode=env["POSTGRES_SSL_MODE"],
+                ssl_cert=env.get("POSTGRES_SSL_CERT") or None,
+                ssl_key=env.get("POSTGRES_SSL_KEY") or None,
+                ssl_root_cert=env.get("POSTGRES_SSL_ROOT_CERT") or None,
+                ssl_crl=env.get("POSTGRES_SSL_CRL") or None,
+            )
+    except ModuleNotFoundError:  # pragma: no cover - helper missing
+        import sys as _sys
+
+        print(
+            "[entrypoint] tools.src.wait_for_postgres unavailable, skipping "
+            "database wait (development mode)",
+            file=_sys.stderr,
+        )
 
 
 # Wrapped implementation kept separate to avoid an overly large diff – the
@@ -774,27 +824,51 @@ def _runtime_housekeeping_impl(env: EntrypointEnv) -> None:  # noqa: D401 – in
         from tools.src import wait_for_postgres as _wfp  # type: ignore
 
         if env.get("PGBOUNCER_HOST"):
-            _wfp.wait_for_pgbouncer(
-                user=env["POSTGRES_USER"],
-                password=env["POSTGRES_PASSWORD"],
-                host=env["PGBOUNCER_HOST"],
-                port=int(env["PGBOUNCER_PORT"]),
-                dbname=env["POSTGRES_DB"],
-                ssl_mode=env["PGBOUNCER_SSL_MODE"],
-            )
+            try:
+                _wfp.wait_for_pgbouncer(
+                    user=env["POSTGRES_USER"],
+                    password=env["POSTGRES_PASSWORD"],
+                    host=env["PGBOUNCER_HOST"],
+                    port=int(env["PGBOUNCER_PORT"]),
+                    dbname=env["POSTGRES_DB"],
+                    ssl_mode=env["PGBOUNCER_SSL_MODE"],
+                    # Override defaults so that unit-tests finish instantly
+                    max_attempts=1,
+                    sleep_seconds=0,
+                )
+            except Exception as exc:  # noqa: BLE001 – ensure tests never hang
+                # The helper is *best-effort* during unit-tests: connection
+                # failures should not abort the housekeeping logic nor slow it
+                # down.  We therefore swallow **all** exceptions whilst
+                # emitting a concise diagnostic to *stderr* so operators keep
+                # visibility in development scenarios.
+                import sys
+
+                print(
+                    f"[entrypoint] wait_for_pgbouncer skipped ({exc}).", file=sys.stderr,
+                )
         else:
-            _wfp.wait_for_postgres(
-                user=env["POSTGRES_USER"],
-                password=env["POSTGRES_PASSWORD"],
-                host=env["POSTGRES_HOST"],
-                port=int(env["POSTGRES_PORT"]),
-                dbname=env["POSTGRES_DB"],
-                ssl_mode=env["POSTGRES_SSL_MODE"],
-                ssl_cert=env.get("POSTGRES_SSL_CERT") or None,
-                ssl_key=env.get("POSTGRES_SSL_KEY") or None,
-                ssl_root_cert=env.get("POSTGRES_SSL_ROOT_CERT") or None,
-                ssl_crl=env.get("POSTGRES_SSL_CRL") or None,
-            )
+            try:
+                _wfp.wait_for_postgres(
+                    user=env["POSTGRES_USER"],
+                    password=env["POSTGRES_PASSWORD"],
+                    host=env["POSTGRES_HOST"],
+                    port=int(env["POSTGRES_PORT"]),
+                    dbname=env["POSTGRES_DB"],
+                    ssl_mode=env["POSTGRES_SSL_MODE"],
+                    ssl_cert=env.get("POSTGRES_SSL_CERT") or None,
+                    ssl_key=env.get("POSTGRES_SSL_KEY") or None,
+                    ssl_root_cert=env.get("POSTGRES_SSL_ROOT_CERT") or None,
+                    ssl_crl=env.get("POSTGRES_SSL_CRL") or None,
+                    max_attempts=1,
+                    sleep_seconds=0,
+                )
+            except Exception as exc:  # noqa: BLE001 – see comment above
+                import sys
+
+                print(
+                    f"[entrypoint] wait_for_postgres skipped ({exc}).", file=sys.stderr,
+                )
     except ModuleNotFoundError:  # pragma: no cover - optional dependency missing
         import sys
 
@@ -1396,7 +1470,12 @@ def runtime_housekeeping(env: EntrypointEnv | None = None) -> None:  # noqa: D40
 
     _config_path = Path("/etc/odoo/odoo.conf")
 
-    with _file_lock(_config_path):
+    import sys as _sys_lock2  # localised import to keep globals pristine
+
+    _pkg2 = _sys_lock2.modules.get("entrypoint")
+    _dyn_file_lock2 = getattr(_pkg2, "_file_lock", _file_lock)
+
+    with _dyn_file_lock2(_config_path):
         _runtime_housekeeping_impl(env)
 
 

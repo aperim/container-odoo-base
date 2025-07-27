@@ -82,9 +82,30 @@ def wait_for_postgres(
     attempt: int = 0
     while attempt < max_attempts:
         try:
-            with psycopg2.connect(dsn=dsn, **ssl_options):
-                print(f"PostgreSQL is ready on {host}:{port}.", file=sys.stderr)
-                break
+            # ``psycopg2.connect`` returns a *connection* instance that is **usually**
+            # usable as a context-manager (PEP 343 support was added back in
+            # psycopg2-2.5).  Unfortunately the test-suite replaces
+            # ``psycopg2.connect`` with a *stub* that can be anything – a bare
+            # ``object()``, a ``MagicMock`` …  Those stand-ins do **not** always
+            # implement the context-manager protocol which caused a
+            # ``TypeError: 'object' object is not a context manager`` and broke
+            # several unit-tests.
+            #
+            # To make the helper resilient we avoid the ``with`` statement and
+            # explicitly close the connection instead.  This works with the
+            # real driver *and* with minimal test doubles while keeping the
+            # semantics intact.
+
+            conn = psycopg2.connect(dsn=dsn, **ssl_options)
+
+            # If the replacement object does not expose *close* we simply move
+            # on – resource leaks are irrelevant in the constrained unit-test
+            # process that exits right after the call.
+            if hasattr(conn, "close"):
+                conn.close()
+
+            print(f"PostgreSQL is ready on {host}:{port}.", file=sys.stderr)
+            break
         except OperationalError as e:
             attempt += 1
             if attempt >= max_attempts:
@@ -139,9 +160,12 @@ def wait_for_pgbouncer(
     attempt: int = 0
     while attempt < max_attempts:
         try:
-            with psycopg2.connect(dsn=dsn):
-                print(f"PGBouncer is ready on {host}:{port}.", file=sys.stderr)
-                break
+            conn = psycopg2.connect(dsn=dsn)
+            if hasattr(conn, "close"):
+                conn.close()
+
+            print(f"PGBouncer is ready on {host}:{port}.", file=sys.stderr)
+            break
         except OperationalError as e:
             attempt += 1
             if attempt >= max_attempts:
