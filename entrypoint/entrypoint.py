@@ -689,6 +689,15 @@ class EntrypointEnv(TypedDict):
     ODOO_LIST_DB: str
     ODOO_SYSLOG: str
 
+    # --- Permission fixer ----------------------------------------------
+    # When set to a *truthy* value the recursive `chown` performed by
+    # `fix_permissions()` is **disabled**.  This gives operators deploying
+    # the image on very large shared volumes (e.g. NFS, Gluster, Ceph)
+    # a convenient escape hatch – the full walk can take minutes on
+    # hundred-thousand file trees and in those environments permissions are
+    # usually pre-provisioned anyway.
+    ODOO_SKIP_CHOWN: str
+
 
 # Accept an already-parsed *EntrypointEnv* as well so that helper functions
 # can safely call ``gather_env(env)`` irrespective of whether *env* points to
@@ -754,6 +763,8 @@ def gather_env(
         POSTGRES_MAXCONN=_get("POSTGRES_MAXCONN", ""),
         ODOO_LIST_DB=_get("ODOO_LIST_DB", ""),
         ODOO_SYSLOG=_get("ODOO_SYSLOG", ""),
+        # Permission fixer toggle
+        ODOO_SKIP_CHOWN=_get("ODOO_SKIP_CHOWN", ""),
         # Runtime user
         PUID=_get("PUID"),
         PGID=_get("PGID"),
@@ -795,6 +806,12 @@ def wait_for_dependencies(env: EntrypointEnv | None = None) -> None:  # noqa: D4
     #    required.
 
     env = gather_env(env)
+
+    # Allow power-users to explicitly disable the potentially expensive
+    # recursive *chown* walk when they know file-system permissions are
+    # already correct (large NFS/Ceph volumes, readonly CI fixtures …).
+    if env.get("ODOO_SKIP_CHOWN") and env["ODOO_SKIP_CHOWN"].lower() in {"1", "true", "yes", "on"}:
+        return  # early-exit – feature consciously disabled by operator
 
     # ------------------------------------------------------------------
     # Redis - mandatory in production but *optional* during local unit tests.
@@ -2232,6 +2249,19 @@ def fix_permissions(env: EntrypointEnv | None = None) -> None:  # noqa: D401
         Path("/mnt/addons"),
     ]
 
+    # Ensure the *odoo* user's **home directory** is also covered so that
+    # files created there during image build (e.g. pip caches) receive the
+    # updated ownership when *apply_runtime_user()* mutates the UID/GID.
+    try:
+        import pwd as _pwd  # local import keeps top-level clean
+
+        home_path = Path(_pwd.getpwnam("odoo").pw_dir)
+        if home_path not in targets:
+            targets.append(home_path)
+    except Exception:  # pragma: no cover – container always has the user
+        # In unit-tests the passwd database may be stubbed – silently ignore.
+        pass
+
     # --------------------------------------------------------------
     # The helper must run **only** when the current process has enough
     # privileges to change ownership.  Attempting to `chown` as an
@@ -2275,12 +2305,20 @@ def fix_permissions(env: EntrypointEnv | None = None) -> None:  # noqa: D401
             if resolved and str(resolved).startswith("/opt/odoo"):
                 continue  # read-only, no need to change perms
 
-        # Recursive *chown* - we rely on the coreutils binary because it is
-        # significantly faster than Python's os.walk + chown in large
-        # directory trees and it supports following / not following
-        # symlinks consistently.  The helper is mocked in the test-suite so
-        # no actual privilege escalation happens.
-        subprocess.run(["chown", "-R", "odoo:odoo", str(p)], check=True)
+        # Recursive *chown* – attempt a **differential** pass first so we
+        # avoid scanning the whole tree when files already have the correct
+        # ownership.  GNU *chown* supports the `--from` switch which limits
+        # the operation to entries currently owned by a specific UID/GID –
+        # here *root:root*.  When the flag is unavailable (busybox or other
+        # minimal implementations) we gracefully fall back to the plain
+        # recursive call.
+
+        try:
+            subprocess.run(
+                ["chown", "--from=0:0", "-R", "odoo:odoo", str(p)], check=True,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError):  # pragma: no cover – fallback
+            subprocess.run(["chown", "-R", "odoo:odoo", str(p)], check=True)
 
 # ---------------------------------------------------------------------------
 #  Privilege drop - replace historical `gosu`

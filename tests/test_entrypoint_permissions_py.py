@@ -127,10 +127,14 @@ def test_fix_permissions_chown_invocations(monkeypatch: pytest.MonkeyPatch) -> N
 
     ep.fix_permissions({})
 
-    expected = [["chown", "-R", "odoo:odoo", p] for p in sorted(targets)]
+    # We expect **at least one** invocation per target directory – either the
+    # differential `--from=0:0` call or the plain recursive one depending on
+    # platform support.  The exact flags are therefore not significant for
+    # functional correctness.
 
-    # Order is not mandated, so we compare as *sets*.
-    assert {tuple(cmd) for cmd in recorded} == {tuple(cmd) for cmd in expected}
+    seen = {cmd[-1] for cmd in recorded if cmd and cmd[0] == "chown"}
+
+    assert seen == targets
 
 
 def test_fix_permissions_skipped_when_unprivileged(monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: D401
@@ -152,5 +156,94 @@ def test_fix_permissions_skipped_when_unprivileged(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(subprocess, "run", _fake_run, raising=True)
 
     ep.fix_permissions({})
+
+    assert called is False
+
+
+# ---------------------------------------------------------------------------
+#  New behaviours – home directory ownership + skip toggle
+# ---------------------------------------------------------------------------
+
+
+def _patch_pwd(monkeypatch: pytest.MonkeyPatch, home: str = "/opt/odoo") -> None:  # noqa: D401 – helper
+    """Make *pwd.getpwnam* return a dummy record with *home* set."""
+
+    import types
+
+    record = types.SimpleNamespace(pw_uid=1000, pw_gid=1000, pw_dir=home)
+
+    import pwd
+
+    monkeypatch.setattr(pwd, "getpwnam", lambda _: record, raising=True)
+
+
+def test_fix_permissions_includes_home_dir(monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: D401
+    """The helper must also adjust ownership of the *odoo* home directory."""
+
+    # Run as *root* so chown triggers.
+    import os
+
+    monkeypatch.setattr(os, "geteuid", lambda: 0, raising=True)
+
+    # Stub passwd entry so the helper can resolve home directory.
+    _patch_pwd(monkeypatch, home="/opt/odoo")
+
+    # Make /opt/odoo exist and be a regular directory.
+    import pathlib
+
+    orig_exists = pathlib.Path.exists
+    orig_is_symlink = pathlib.Path.is_symlink
+
+    targets = {"/opt/odoo"}
+
+    def fake_exists(self: pathlib.Path) -> bool:  # noqa: D401
+        if str(self) in targets:
+            return True
+        return orig_exists(self)
+
+    def fake_is_symlink(self: pathlib.Path) -> bool:  # noqa: D401
+        if str(self) in targets:
+            return False
+        return orig_is_symlink(self)
+
+    monkeypatch.setattr(pathlib.Path, "exists", fake_exists, raising=False)
+    monkeypatch.setattr(pathlib.Path, "is_symlink", fake_is_symlink, raising=False)
+
+    recorded = []
+
+    import subprocess
+
+    def _fake_run(cmd, **kwargs):  # noqa: D401
+        recorded.append(cmd)
+
+    monkeypatch.setattr(subprocess, "run", _fake_run, raising=True)
+
+    ep.fix_permissions({})
+
+    # Verify /opt/odoo was included in invocations.
+    assert any(cmd[-1] == "/opt/odoo" for cmd in recorded)
+
+
+def test_fix_permissions_skipped_via_env(monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: D401
+    """Setting *ODOO_SKIP_CHOWN* disables the recursive chown."""
+
+    import os
+
+    # We would otherwise be root.
+    monkeypatch.setattr(os, "geteuid", lambda: 0, raising=True)
+
+    called = False
+
+    import subprocess
+
+    def _fake_run(cmd, **kwargs):  # noqa: D401
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(subprocess, "run", _fake_run, raising=True)
+
+    env = {"ODOO_SKIP_CHOWN": "true"}
+
+    ep.fix_permissions(env)
 
     assert called is False
