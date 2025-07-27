@@ -60,10 +60,13 @@ The Python port is feature-rich but **not yet a drop-in replacement** for the
 legacy shell script.  The following items still need work and are *deliberately*
 left out of scope for the current merge request:
 
-2. Additional proxy/logging flags not yet injected by `build_odoo_command()`.
+✔  All previously missing proxy & logging flags have now been implemented –
+   `build_odoo_command()` injects the same defaults as the historical Bash
+   entry-point (`--proxy-add-x-forwarded-*`, `--log-handler`, in-container
+   memory guards, …).  The helper keeps the **override** semantics unchanged
+   so that user-supplied options always take priority.
 
-Keep the list in sync as the gaps are closed; update both this section **and**
-the status table above accordingly.
+Keep the list in sync as further gaps are addressed.
 """
 
 from __future__ import annotations
@@ -1598,6 +1601,39 @@ def build_odoo_command(
 
     _add("--limit-time-cpu", "60")
     _add("--limit-time-real", "120")
+
+    # ------------------------------------------------------------------
+    # Remaining **proxy / logging / memory** flags which were still handled
+    # by the legacy shell script but missing from the first iterations of
+    # the Python port.  They are collected here so that all *static* default
+    # options live in the same helper – easier to review & unit-test.
+    # ------------------------------------------------------------------
+
+    # Honour additional reverse-proxy headers so that installations sitting
+    # behind complex load-balancer stacks still generate correct absolute
+    # URLs (port & host).  The options are no-ops when the upstream proxy
+    # does not supply the headers therefore enabling them unconditionally is
+    # safe.  The user can still override/disable them explicitly if needed.
+
+    _add("--proxy-add-x-forwarded-port")
+    _add("--proxy-add-x-forwarded-host")
+
+    # Silence Werkzeug’s built-in HTTP server which otherwise logs *every*
+    # request to *stdout* when Odoo serves static files during maintenance or
+    # asset generation phases.  The Bash script forced the level to
+    # *CRITICAL* – we preserve that behaviour.
+
+    _add("--log-handler", "werkzeug:CRITICAL")
+
+    # Memory guards – keep the historical conservative defaults that prevent
+    # a single worker from exhausting the container.  The chosen values are
+    # the ones shipped in the reference Docker image at the time the Python
+    # migration started (soft = 2 GiB, hard = 2.5 GiB).  They can be
+    # overridden through CLI flags or via a future environment variable if
+    # needed.
+
+    _add("--limit-memory-soft", str(2 * 1024 ** 3))  # 2 GiB
+    _add("--limit-memory-hard", str(int(2.5 * 1024 ** 3)))  # 2.5 GiB
 
     # Final command: keep consistent with §7 - we omit `gosu` because the
     # Python entry-point already runs under the correct UID/GID when used as
