@@ -56,6 +56,8 @@ def test_injected_defaults(monkeypatch):  # noqa: D401 – imperative mood
         "--logfile",
         "--csv-internal-separator",
         "--limit-request",
+        "--limit-memory-soft-gevent",
+        "--limit-memory-hard-gevent",
     }
 
     # Flags with associated values appear as **two** arguments therefore we

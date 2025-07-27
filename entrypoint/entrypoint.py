@@ -70,16 +70,89 @@ script *production-ready*:
    `apply_runtime_user`) are described in detail and no longer mislead
    readers.
 
-2. Exhaustive default flag coverage - **Done** :heavy_check_mark:
-   The *remaining* legacy flags have been audited and ported.  The helper
-   now injects:
-     * `--logfile /var/log/odoo/odoo.log` - when the directory exists.
-     * `--csv-internal-separator ,` - safe default mirroring the historical value.
-     * `--limit-request 8192` - matches the Dockerfile guard against large payloads.
-     * `--proxy-add-x-forwarded-for` - completes the proxy header trio.  
-   With those additions the generated command-line reaches **full parity**
-   with the reference Bash implementation; unit tests assert their presence
-   and guarantee user supplied overrides still take precedence.
+2. Exhaustive default flag coverage - **In progress** :warning:
+   The original shell entry-point supported *all* command-line parameters
+   shipped with **Odoo 7.1** (≈2013).  The current Python helper covers the
+   most common ones but a non-trivial subset is **still missing** - in
+   particular everything related to SMTP, advanced PostgreSQL tuning,
+   i18n, testing helpers and a handful of legacy RPC interfaces.
+
+   The matrix below will drive the remaining work.  For each flag we record
+   whether it is:
+
+   • available on the generated **CLI** (added via `build_odoo_command()`)
+   • written to **odoo.conf** at run-time       (`runtime_housekeeping()`)
+   • configurable through an **environment variable** (`gather_env()`)
+
+   Legend
+   ✓   Fully implemented & unit-tested - parity with the Bash script.
+   ~   Partially implemented - helper exists but lacks one aspect (env/cli…).
+   ✗   Not implemented - no support yet.
+
+   Flag coverage matrix (Odoo 7.1 baseline)
+   ````text
+   Flag                             | Concern / category          | CLI | conf | env | Notes
+   ---------------------------------+-----------------------------+-----+------+-----+----------------------------------------------
+   --addons-path                    | Add-ons discovery           | ✓   | ✗    | ✗  | automatic default when paths exist
+   --admin-passwd                   | Security                    | ✗   | ✗    | ✗  | must read $ODOO_ADMIN_PASSWORD
+   --auto-reload                    | Development / hot-reload    | ✗   | ✗    | ✗  | mostly dev, low prio for prod images
+   --csv-internal-separator         | CSV import/export           | ✓   | ✗    | ✗  | default injected (",")
+   --data-dir                       | Filestore location          | ✗   | ✗    | ✗  | default is inside container; make configurable
+   --db_host                        | PostgreSQL                  | ✓   | ✗    | ✓  | $POSTGRES_HOST / $PGBOUNCER_HOST
+   --db_port                        | PostgreSQL                  | ✓   | ✗    | ✓  | $POSTGRES_PORT
+   --db_user                        | PostgreSQL                  | ✓   | ✗    | ✓  | $POSTGRES_USER
+   --db_password                    | PostgreSQL                  | ✓   | ✗    | ✓  | $POSTGRES_PASSWORD
+   --db_sslmode                     | PostgreSQL TLS              | ✓   | ✗    | ✓  | $POSTGRES_SSL_MODE
+   --db_sslrootcert / key / cert    | PostgreSQL TLS              | ✓   | ✗    | ✓  | optional
+   --db_template                    | PostgreSQL                  | ✗   | ✗    | ✗  | expose $POSTGRES_TEMPLATE
+   --db_maxconn                     | PostgreSQL tune             | ✗   | ✗    | ✗  | default 64
+   --dbfilter                       | Multi-db routing            | ✗   | ✗    | ✗  | expose $ODOO_DBFILTER
+   --debug / --debug-mode           | Debug flags                 | ✗   | ✗    | ✗  | honour $ODOO_DEBUG
+   --email-from                     | SMTP                        | ✗   | ✗    | ✗  | expose $ODOO_EMAIL_FROM
+   --import-partial                 | Import resilience           | ✗   | ✗    | ✗  |
+   --init                           | Module installation         | ✗   | ✗    | ✗  | handled indirectly by initialise_instance()
+   --limit-memory-soft              | Resource limits             | ✓   | ✗    | ✗  | 2 GiB default
+   --limit-memory-hard              | Resource limits             | ✓   | ✗    | ✗  | 2.5 GiB default
+   --limit-request                  | Resource limits             | ✓   | ✗    | ✗  | 8192 default
+   --limit-time-cpu                 | Resource limits             | ✓   | ✗    | ✗  | 60 s
+   --limit-time-real                | Resource limits             | ✓   | ✗    | ✗  | 120 s
+   --list-db                        | Security                    | ✗   | ✗    | ✗  | expose $ODOO_LIST_DB (true/false)
+   --log-db                         | Logging                     | ✗   | ✗    | ✗  | rarely used - low prio
+   --log-handler                    | Logging                     | ✓   | ✗    | ✗  | werkzeug:CRITICAL default
+   --log-level                      | Logging                     | ✗   | ✗    | ✗  | expose $ODOO_LOG_LEVEL
+   --logfile                        | Logging                     | ✓   | ✗    | ✗  | /var/log/odoo/odoo.log when dir exists
+   --max-cron-threads               | Performance                 | ✗   | ✗    | ✗  | expose $ODOO_MAX_CRON_THREADS (default 2)
+   --netrpc / interface / port      | Legacy RPC                  | ✗   | ✗    | ✗  | rarely used nowadays - backlog
+   --osv-memory-age-limit           | Legacy ORM                  | ✗   | ✗    | ✗  |
+   --osv-memory-count-limit         | Legacy ORM                  | ✗   | ✗    | ✗  |
+   --pidfile                        | Process supervision         | ✗   | ✗    | ✗  |
+   --pg-path                        | PostgreSQL binaries         | ✗   | ✗    | ✗  |
+   --proxy-mode                     | Reverse proxy               | ✓   | ✗    | ✗  | enabled by default
+   --proxy-ssl-header               | Reverse proxy               | ✓   | ✗    | ✗  | added by default
+   --proxy-add-x-forwarded-port     | Reverse proxy               | ✓   | ✗    | ✗  |
+   --proxy-add-x-forwarded-host     | Reverse proxy               | ✓   | ✗    | ✗  |
+   --proxy-add-x-forwarded-for      | Reverse proxy               | ✓   | ✗    | ✗  |
+   --reportgz                       | Reporting                   | ✗   | ✗    | ✗  |
+   --smtp-server                    | SMTP                        | ✗   | ✗    | ✗  | expose $SMTP_SERVER (default localhost)
+   --smtp-port                      | SMTP                        | ✗   | ✗    | ✗  | expose $SMTP_PORT (25)
+   --smtp-user                      | SMTP                        | ✗   | ✗    | ✗  | expose $SMTP_USER
+   --smtp-password                  | SMTP                        | ✗   | ✗    | ✗  | expose $SMTP_PASSWORD
+   --smtp-ssl                       | SMTP                        | ✗   | ✗    | ✗  | expose $SMTP_SSL (true/false)
+   --syslog                         | Logging                     | ✗   | ✗    | ✗  | opt-in - add when requested
+   --test-enable / test-*           | Test framework              | ✗   | ✗    | ✗  | out of scope for prod but should be wired
+   --timezone                       | Internationalisation        | ✗   | ✗    | ✗  | expose $TZ / $ODOO_TZ
+   --translate-modules              | Internationalisation        | ✗   | ✗    | ✗  | expose $ODOO_TRANSLATE_MODULES
+   --unaccent                       | PostgreSQL ext              | ✓   | ✗    | ✗  | injected by default
+   --without-demo                   | Demo data                   | ✗   | ✗    | ✗  | respect $ODOO_WITHOUT_DEMO
+   --workers                        | Concurrency                 | ✓   | ✗    | ✗  | computed from CPU count unless overridden
+   --xmlrpc / interface / port      | HTTP API                    | (core) | (core) | - | Odoo enables by default - override TBD
+   --xmlrpcs / interface / port     | HTTPS API                   | ✗   | ✗    | ✗  | secure RPC endpoint; needs TLS cfg
+   ````
+
+   The table is intentionally **non-exhaustive** with regards to
+   *post-7.1* flags (e.g. `--limit-memory-soft-gevent`) because they are
+   already tracked in the regular change-log above.  Once every ✗ entry is
+   ticked, this item can finally be marked **Done**.
 
 3. Runtime user mutation
    * `apply_runtime_user()` changes UID/GID but **does not adjust
@@ -1724,6 +1797,14 @@ def build_odoo_command(
 
     _add("--limit-memory-soft", str(2 * 1024 ** 3))  # 2 GiB
     _add("--limit-memory-hard", str(int(2.5 * 1024 ** 3)))  # 2.5 GiB
+
+    # Mirror the *process-wide* memory guards for the dedicated **gevent**
+    # worker class introduced in Odoo 17.0.  The historical Bash script
+    # forwarded the *exact same* thresholds to those specialised flags so we
+    # replicate the behaviour here to achieve full parity.
+
+    _add("--limit-memory-soft-gevent", str(2 * 1024 ** 3))  # 2 GiB
+    _add("--limit-memory-hard-gevent", str(int(2.5 * 1024 ** 3)))  # 2.5 GiB
 
     # ------------------------------------------------------------------
     # Extended *legacy* defaults that were still handled by the historical
