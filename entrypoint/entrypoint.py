@@ -94,7 +94,7 @@ script *production-ready*:
    Flag                             | Concern / category          | CLI | conf | env | Notes
    ---------------------------------+-----------------------------+-----+------+-----+----------------------------------------------
    --addons-path                    | Add-ons discovery           | ✓   | ✗    | ✗  | automatic default when paths exist
-   --admin-passwd                   | Security                    | ✗   | ✗    | ✗  | must read $ODOO_ADMIN_PASSWORD
+   --admin-passwd                   | Security                    | ✓   | ✗    | ✓  | reads $ODOO_ADMIN_PASSWORD
    --auto-reload                    | Development / hot-reload    | ✗   | ✗    | ✗  | mostly dev, low prio for prod images
    --csv-internal-separator         | CSV import/export           | ✓   | ✗    | ✗  | default injected (",")
    --data-dir                       | Filestore location          | ✗   | ✗    | ✗  | default is inside container; make configurable
@@ -654,6 +654,9 @@ class EntrypointEnv(TypedDict):
     PGBOUNCER_PORT: str
     PGBOUNCER_SSL_MODE: str
 
+    # Security / master password
+    ODOO_ADMIN_PASSWORD: str
+
     # Add-ons & localisation
     ODOO_LANGUAGES: str
     ODOO_ADDON_INIT_BLOCKLIST: str
@@ -703,6 +706,8 @@ def gather_env(
         PGBOUNCER_HOST=_get("PGBOUNCER_HOST"),
         PGBOUNCER_PORT=_get("PGBOUNCER_PORT", "5432"),
         PGBOUNCER_SSL_MODE=_get("PGBOUNCER_SSL_MODE", "disable"),
+        # Master password
+        ODOO_ADMIN_PASSWORD=_get("ODOO_ADMIN_PASSWORD"),
         # Add-ons
         ODOO_LANGUAGES=_get("ODOO_LANGUAGES", "en_AU,en_CA,en_IN,en_NZ,en_UK,en_US"),
         ODOO_ADDON_INIT_BLOCKLIST=_get("ODOO_ADDON_INIT_BLOCKLIST"),
@@ -1840,6 +1845,13 @@ def build_odoo_command(
     # Honour X-Forwarded-For based client IP header - harmless when absent.
 
     _add("--proxy-add-x-forwarded-for")
+
+    # ------------------------------------------------------------------
+    # Security - master/admin password
+    # ------------------------------------------------------------------
+
+    if env.get("ODOO_ADMIN_PASSWORD"):
+        _add("--admin-passwd", env["ODOO_ADMIN_PASSWORD"])
 
     # Final command: keep consistent with §7 - we omit `gosu` because the
     # Python entry-point already runs under the correct UID/GID when used as
