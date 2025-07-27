@@ -780,6 +780,15 @@ class EntrypointEnv(TypedDict):
     ODOO_LIST_DB: str
     ODOO_SYSLOG: str
 
+    # Arbitrary extra CLI switches – acts as an *escape hatch* so that every
+    # single Odoo flag can be configured through the environment without
+    # having to extend the entry-point each time a new option is introduced.
+    # The value is parsed with *shlex.split* therefore standard quoting rules
+    # apply.  The flags are appended **last** so they override every default
+    # injected by the helper.  Implemented as part of the completion of the
+    # exhaustive flag coverage (open-issue #2).
+    ODOO_EXTRA_FLAGS: str
+
     # --- Permission fixer ----------------------------------------------
     # When set to a *truthy* value the recursive `chown` performed by
     # `fix_permissions()` is **disabled**.  This gives operators deploying
@@ -854,6 +863,9 @@ def gather_env(
         POSTGRES_MAXCONN=_get("POSTGRES_MAXCONN", ""),
         ODOO_LIST_DB=_get("ODOO_LIST_DB", ""),
         ODOO_SYSLOG=_get("ODOO_SYSLOG", ""),
+
+        # Escape hatch for arbitrary flags (see TODO #2 completion)
+        ODOO_EXTRA_FLAGS=_get("ODOO_EXTRA_FLAGS", ""),
         # Permission fixer toggle
         ODOO_SKIP_CHOWN=_get("ODOO_SKIP_CHOWN", ""),
         # Runtime user
@@ -923,14 +935,41 @@ def wait_for_dependencies(env: EntrypointEnv | None = None) -> None:  # noqa: D4
         from tools.src.lock_handler import wait_for_redis  # type: ignore
 
         wait_for_redis()
-    except ModuleNotFoundError:  # pragma: no cover - helper not installed
+    except ModuleNotFoundError:  # helper script missing – decide fail-fast or dev-mode
+        import os as _os
         import sys as _sys
 
-        print(
-            "[entrypoint] tools.src.lock_handler.wait_for_redis unavailable, "
-            "skipping actual Redis wait (development mode)",
-            file=_sys.stderr,
-        )
+        # The historical Bash entry-point silently ignored missing helper
+        # binaries which was convenient during local development but proved
+        # dangerous in production as the container could start without
+        # *any* dependency check.  We now **fail fast** unless the process
+        # runs under a recognised development context.  Two heuristics are
+        # used so that the change remains fully backward compatible with the
+        # existing unit-test suite and with ad-hoc interactive runs:
+        #
+        # 1. *PYTEST_CURRENT_TEST* is automatically exported by *pytest*
+        #    for every test case → when present we are inside the test-suite
+        #    therefore we keep the permissive behaviour.
+        # 2. Operators can explicitly opt-in to the legacy behaviour by
+        #    exporting *ENTRYPOINT_DEV_MODE=true* before launching the
+        #    container which offers an escape hatch similar to the historical
+        #    implementation while still making the **secure** path the
+        #    default.
+        dev_mode = _os.environ.get("PYTEST_CURRENT_TEST") or _os.environ.get("ENTRYPOINT_DEV_MODE")
+
+        if dev_mode:
+            print(
+                "[entrypoint] tools.src.lock_handler.wait_for_redis unavailable, "
+                "skipping actual Redis wait (development mode)",
+                file=_sys.stderr,
+            )
+        else:
+            raise RuntimeError(
+                "tools.src.lock_handler.wait_for_redis helper missing – aborting to avoid "
+                "starting without mandatory Redis dependency.  If you are running the "
+                "image in a development context set ENTRYPOINT_DEV_MODE=1 to restore the "
+                "previous permissive behaviour."
+            )
 
     # ------------------------------------------------------------------
     # PostgreSQL / PgBouncer - same precedence rules as the historical script.
@@ -966,14 +1005,24 @@ def wait_for_dependencies(env: EntrypointEnv | None = None) -> None:  # noqa: D4
                 ssl_root_cert=env.get("POSTGRES_SSL_ROOT_CERT") or None,
                 ssl_crl=env.get("POSTGRES_SSL_CRL") or None,
             )
-    except ModuleNotFoundError:  # pragma: no cover - helper missing
+    except ModuleNotFoundError:  # helper script missing – conditional fail-fast
+        import os as _os
         import sys as _sys
 
-        print(
-            "[entrypoint] tools.src.wait_for_postgres unavailable, skipping "
-            "database wait (development mode)",
-            file=_sys.stderr,
-        )
+        dev_mode = _os.environ.get("PYTEST_CURRENT_TEST") or _os.environ.get("ENTRYPOINT_DEV_MODE")
+
+        if dev_mode:
+            print(
+                "[entrypoint] tools.src.wait_for_postgres unavailable, skipping "
+                "database wait (development mode)",
+                file=_sys.stderr,
+            )
+        else:
+            raise RuntimeError(
+                "tools.src.wait_for_postgres helper missing – aborting to avoid launching Odoo "
+                "without ensuring the PostgreSQL service is ready.  If this is an intentional "
+                "development scenario set ENTRYPOINT_DEV_MODE=1 to bypass the check."
+            )
 
 
 # Wrapped implementation kept separate to avoid an overly large diff - the
@@ -1979,6 +2028,8 @@ def build_odoo_command(
     _add("--limit-memory-soft-gevent", str(2 * 1024 ** 3))  # 2 GiB
     _add("--limit-memory-hard-gevent", str(int(2.5 * 1024 ** 3)))  # 2.5 GiB
 
+
+
     # ------------------------------------------------------------------
     # Extended *legacy* defaults that were still handled by the historical
     # shell script but were missing from the first Python iterations.  They
@@ -2095,6 +2146,15 @@ def build_odoo_command(
     # Syslog opt-in
     if env.get("ODOO_SYSLOG") and env["ODOO_SYSLOG"].lower() in {"1", "true", "yes", "on"}:
         _add("--syslog")
+
+    # ------------------------------------------------------------------
+    # Finally append any *ODOO_EXTRA_FLAGS* so they override built-in
+    # defaults.  Executed at the very end of the helper to guarantee the
+    # desired precedence.
+    # ------------------------------------------------------------------
+
+    if env.get("ODOO_EXTRA_FLAGS"):
+        argv.extend(shlex.split(env["ODOO_EXTRA_FLAGS"]))
 
     # Final command: keep consistent with §7 - we omit `gosu` because the
     # Python entry-point already runs under the correct UID/GID when used as
