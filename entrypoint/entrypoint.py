@@ -95,7 +95,7 @@ script *production-ready*:
    ---------------------------------+-----------------------------+-----+------+-----+----------------------------------------------
    --addons-path                    | Add-ons discovery           | ✓   | ✗    | ✗  | automatic default when paths exist
    --admin-passwd                   | Security                    | ✓   | ✗    | ✓  | reads $ODOO_ADMIN_PASSWORD
-   --auto-reload                    | Development / hot-reload    | ✗   | ✗    | ✗  | mostly dev, low prio for prod images
+   --auto-reload                    | Development / hot-reload    | ✓   | ✗    | ✓  | reads $ODOO_AUTO_RELOAD
    # --csv-internal-separator (dropped – not part of 7.1)
    --data-dir                       | Filestore location          | ✓   | ✗    | ✓  | reads $ODOO_DATA_DIR
    --db_host                        | PostgreSQL                  | ✓   | ✗    | ✓  | $POSTGRES_HOST / $PGBOUNCER_HOST
@@ -104,8 +104,8 @@ script *production-ready*:
    --db_password                    | PostgreSQL                  | ✓   | ✗    | ✓  | $POSTGRES_PASSWORD
    --db_sslmode                     | PostgreSQL TLS              | ✓   | ✗    | ✓  | $POSTGRES_SSL_MODE
    --db_sslrootcert / key / cert    | PostgreSQL TLS              | ✓   | ✗    | ✓  | optional
-   --db_template                    | PostgreSQL                  | ✗   | ✗    | ✗  | expose $POSTGRES_TEMPLATE
-   --db_maxconn                     | PostgreSQL tune             | ✗   | ✗    | ✗  | default 64
+   --db_template                    | PostgreSQL                  | ✓   | ✗    | ✓  | reads $POSTGRES_TEMPLATE
+   --db_maxconn                     | PostgreSQL tune             | ✓   | ✗    | ✓  | reads $POSTGRES_MAXCONN
    --dbfilter                       | Multi-db routing            | ✓   | ✗    | ✓  | reads $ODOO_DBFILTER
    --debug / --debug-mode           | Debug flags                 | ✓   | ✗    | ✓  | reads $ODOO_DEBUG
    --email-from                     | SMTP                        | ✓   | ✗    | ✓  | reads $ODOO_EMAIL_FROM
@@ -116,7 +116,7 @@ script *production-ready*:
    --limit-request                  | Resource limits             | ✓   | ✗    | ✗  | 8192 default
    --limit-time-cpu                 | Resource limits             | ✓   | ✗    | ✗  | 60 s
    --limit-time-real                | Resource limits             | ✓   | ✗    | ✗  | 120 s
-   --list-db                        | Security                    | ✗   | ✗    | ✗  | expose $ODOO_LIST_DB (true/false)
+   --list-db                        | Security                    | ✓   | ✗    | ✓  | reads $ODOO_LIST_DB (true/false)
    --log-db                         | Logging                     | ✗   | ✗    | ✗  | rarely used - low prio
    --log-handler                    | Logging                     | ✓   | ✗    | ✗  | werkzeug:CRITICAL default
    --log-level                      | Logging                     | ✓   | ✗    | ✓  | reads $ODOO_LOG_LEVEL
@@ -132,12 +132,12 @@ script *production-ready*:
    # flags were never part of Odoo's official CLI and have therefore been
    # removed to honour the exhaustive 7.1 reference list.
    --reportgz                       | Reporting                   | ✗   | ✗    | ✗  |
-   --smtp-server                    | SMTP                        | ✗   | ✗    | ✗  | expose $SMTP_SERVER (default localhost)
-   --smtp-port                      | SMTP                        | ✗   | ✗    | ✗  | expose $SMTP_PORT (25)
-   --smtp-user                      | SMTP                        | ✗   | ✗    | ✗  | expose $SMTP_USER
-   --smtp-password                  | SMTP                        | ✗   | ✗    | ✗  | expose $SMTP_PASSWORD
-   --smtp-ssl                       | SMTP                        | ✗   | ✗    | ✗  | expose $SMTP_SSL (true/false)
-   --syslog                         | Logging                     | ✗   | ✗    | ✗  | opt-in - add when requested
+   --smtp-server                    | SMTP                        | ✓   | ✗    | ✓  | reads $SMTP_SERVER (default localhost)
+   --smtp-port                      | SMTP                        | ✓   | ✗    | ✓  | reads $SMTP_PORT (25)
+   --smtp-user                      | SMTP                        | ✓   | ✗    | ✓  | reads $SMTP_USER
+   --smtp-password                  | SMTP                        | ✓   | ✗    | ✓  | reads $SMTP_PASSWORD
+   --smtp-ssl                       | SMTP                        | ✓   | ✗    | ✓  | reads $SMTP_SSL (true/false)
+   --syslog                         | Logging                     | ✓   | ✗    | ✓  | reads $ODOO_SYSLOG (opt-in)
    --test-enable / test-*           | Test framework              | ✗   | ✗    | ✗  | out of scope for prod but should be wired
    --timezone                       | Internationalisation        | ✗   | ✗    | ✗  | expose $TZ / $ODOO_TZ
    --translate-modules              | Internationalisation        | ✗   | ✗    | ✗  | expose $ODOO_TRANSLATE_MODULES
@@ -674,6 +674,21 @@ class EntrypointEnv(TypedDict):
     PUID: str
     PGID: str
 
+    # --- New extended flags (TODO #2 completion) ----------------------
+    # SMTP configuration
+    SMTP_SERVER: str
+    SMTP_PORT: str
+    SMTP_USER: str
+    SMTP_PASSWORD: str
+    SMTP_SSL: str
+
+    # Miscellaneous runtime toggles
+    ODOO_AUTO_RELOAD: str
+    POSTGRES_TEMPLATE: str
+    POSTGRES_MAXCONN: str
+    ODOO_LIST_DB: str
+    ODOO_SYSLOG: str
+
 
 # Accept an already-parsed *EntrypointEnv* as well so that helper functions
 # can safely call ``gather_env(env)`` irrespective of whether *env* points to
@@ -727,6 +742,18 @@ def gather_env(
         ODOO_EMAIL_FROM=_get("ODOO_EMAIL_FROM"),
         ODOO_LOG_LEVEL=_get("ODOO_LOG_LEVEL"),
         ODOO_MAX_CRON_THREADS=_get("ODOO_MAX_CRON_THREADS"),
+        # Newly supported SMTP & misc flags (TODO #2 completion)
+        SMTP_SERVER=_get("SMTP_SERVER", ""),
+        SMTP_PORT=_get("SMTP_PORT", ""),
+        SMTP_USER=_get("SMTP_USER", ""),
+        SMTP_PASSWORD=_get("SMTP_PASSWORD", ""),
+        SMTP_SSL=_get("SMTP_SSL", ""),
+
+        ODOO_AUTO_RELOAD=_get("ODOO_AUTO_RELOAD", ""),
+        POSTGRES_TEMPLATE=_get("POSTGRES_TEMPLATE", ""),
+        POSTGRES_MAXCONN=_get("POSTGRES_MAXCONN", ""),
+        ODOO_LIST_DB=_get("ODOO_LIST_DB", ""),
+        ODOO_SYSLOG=_get("ODOO_SYSLOG", ""),
         # Runtime user
         PUID=_get("PUID"),
         PGID=_get("PGID"),
@@ -1911,6 +1938,45 @@ def build_odoo_command(
     # Cron threads parameter
     if env.get("ODOO_MAX_CRON_THREADS"):
         _add("--max-cron-threads", env["ODOO_MAX_CRON_THREADS"])
+
+    # ------------------------------------------------------------------
+    # Newly supported flags – completion of TODO #2 matrix
+    # ------------------------------------------------------------------
+
+    # SMTP configuration – add flags only when corresponding env variable
+    # is provided so that default Odoo behaviour remains untouched otherwise.
+    if env.get("SMTP_SERVER"):
+        _add("--smtp-server", env["SMTP_SERVER"])
+    if env.get("SMTP_PORT"):
+        _add("--smtp-port", env["SMTP_PORT"])
+    if env.get("SMTP_USER"):
+        _add("--smtp-user", env["SMTP_USER"])
+    if env.get("SMTP_PASSWORD"):
+        _add("--smtp-password", env["SMTP_PASSWORD"])
+    if env.get("SMTP_SSL") and env["SMTP_SSL"].lower() in {"1", "true", "yes", "on"}:
+        _add("--smtp-ssl")
+
+    # Auto-reload helper – mostly for development usage.
+    if env.get("ODOO_AUTO_RELOAD") and env["ODOO_AUTO_RELOAD"].lower() in {"1", "true", "yes", "on"}:
+        _add("--auto-reload")
+
+    # Advanced PostgreSQL tuning
+    if env.get("POSTGRES_TEMPLATE"):
+        _add("--db_template", env["POSTGRES_TEMPLATE"])
+    if env.get("POSTGRES_MAXCONN"):
+        _add("--db_maxconn", env["POSTGRES_MAXCONN"])
+
+    # List-db toggle (security)
+    if env.get("ODOO_LIST_DB"):
+        val = env["ODOO_LIST_DB"].lower()
+        if val in {"0", "false", "no", "off"}:
+            _add("--list-db", "false")
+        elif val in {"1", "true", "yes", "on"}:
+            _add("--list-db", "true")
+
+    # Syslog opt-in
+    if env.get("ODOO_SYSLOG") and env["ODOO_SYSLOG"].lower() in {"1", "true", "yes", "on"}:
+        _add("--syslog")
 
     # Final command: keep consistent with §7 - we omit `gosu` because the
     # Python entry-point already runs under the correct UID/GID when used as
