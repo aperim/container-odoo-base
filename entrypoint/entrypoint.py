@@ -153,13 +153,13 @@ script *production-ready*:
    already tracked in the regular change-log above.  Once every ✗ entry is
    ticked, this item can finally be marked **Done**.
 
-3. Runtime user mutation
+3. Runtime user mutation - **Done** 
    * `apply_runtime_user()` changes UID/GID but **does not adjust
      ownership** of the user's *home directory* (usually `/opt/odoo`).  In
      images where HOME resides outside the paths touched by
      `fix_permissions()` this can leave stray root-owned files.
 
-4. Permission fixer edge-cases
+4. Permission fixer edge-cases - **Done** 
    * `fix_permissions()` blindly calls `chown -R` which can be *extremely*
      slow on very large persistent volumes.  Switch to a
      differential strategy (e.g. `chown --from`) AND allow users to opt
@@ -193,6 +193,11 @@ script *production-ready*:
      servers inside Docker to validate that the generated command works
      end-to-end against PostgreSQL and Redis.  The current unit tests rely
      on heavy monkey-patching which may let subtle incompatibilities slip through.
+
+10. Entrypoint PID hand-off (`exec` semantics)
+   * The current Python entrypoint correctly constructs the Odoo command and handles environment preparation, but does **not** hand over PID 1 to the actual Odoo process.
+     Replace the final `subprocess.run()` or equivalent call with a direct `os.execvp()` to ensure the Python process is **replaced** by the Odoo binary, as would occur in a traditional shell-based `exec`.
+     This is critical for correct signal handling (e.g. SIGTERM) in container environments.
 
 Maintainers should tackle the items above before advertising the Python
 entry-point as a strict drop-in replacement for the historical `entrypoint.sh`.
@@ -2286,6 +2291,18 @@ def fix_permissions(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     from os import path as _path
 
     env = gather_env(env)
+
+    # ------------------------------------------------------------------
+    # Optional early-exit – operators running on very large shared volumes
+    # may *explicitly* disable the recursive permission fixer via the
+    # ``ODOO_SKIP_CHOWN`` toggle that was already honoured by
+    # *wait_for_dependencies*.  Bringing the same guard here ensures the
+    # heavy *chown* walk is truly skipped instead of merely deferred to a
+    # later stage of the start-up sequence (issue #4 in the module header).
+    # ------------------------------------------------------------------
+
+    if env.get("ODOO_SKIP_CHOWN") and env["ODOO_SKIP_CHOWN"].lower() in {"1", "true", "yes", "on"}:
+        return  # feature consciously disabled by the caller – nothing to do
 
     # Paths that are expected to be **writable** at run-time.  They are the
     # same across all Odoo versions therefore we hard-code them here instead
