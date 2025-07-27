@@ -97,7 +97,7 @@ script *production-ready*:
    --admin-passwd                   | Security                    | ✓   | ✗    | ✓  | reads $ODOO_ADMIN_PASSWORD
    --auto-reload                    | Development / hot-reload    | ✗   | ✗    | ✗  | mostly dev, low prio for prod images
    # --csv-internal-separator (dropped – not part of 7.1)
-   --data-dir                       | Filestore location          | ✗   | ✗    | ✗  | default is inside container; make configurable
+   --data-dir                       | Filestore location          | ✓   | ✗    | ✓  | reads $ODOO_DATA_DIR
    --db_host                        | PostgreSQL                  | ✓   | ✗    | ✓  | $POSTGRES_HOST / $PGBOUNCER_HOST
    --db_port                        | PostgreSQL                  | ✓   | ✗    | ✓  | $POSTGRES_PORT
    --db_user                        | PostgreSQL                  | ✓   | ✗    | ✓  | $POSTGRES_USER
@@ -106,9 +106,9 @@ script *production-ready*:
    --db_sslrootcert / key / cert    | PostgreSQL TLS              | ✓   | ✗    | ✓  | optional
    --db_template                    | PostgreSQL                  | ✗   | ✗    | ✗  | expose $POSTGRES_TEMPLATE
    --db_maxconn                     | PostgreSQL tune             | ✗   | ✗    | ✗  | default 64
-   --dbfilter                       | Multi-db routing            | ✗   | ✗    | ✗  | expose $ODOO_DBFILTER
-   --debug / --debug-mode           | Debug flags                 | ✗   | ✗    | ✗  | honour $ODOO_DEBUG
-   --email-from                     | SMTP                        | ✗   | ✗    | ✗  | expose $ODOO_EMAIL_FROM
+   --dbfilter                       | Multi-db routing            | ✓   | ✗    | ✓  | reads $ODOO_DBFILTER
+   --debug / --debug-mode           | Debug flags                 | ✓   | ✗    | ✓  | reads $ODOO_DEBUG
+   --email-from                     | SMTP                        | ✓   | ✗    | ✓  | reads $ODOO_EMAIL_FROM
    --import-partial                 | Import resilience           | ✗   | ✗    | ✗  |
    --init                           | Module installation         | ✗   | ✗    | ✗  | handled indirectly by initialise_instance()
    --limit-memory-soft              | Resource limits             | ✓   | ✗    | ✗  | 2 GiB default
@@ -119,9 +119,9 @@ script *production-ready*:
    --list-db                        | Security                    | ✗   | ✗    | ✗  | expose $ODOO_LIST_DB (true/false)
    --log-db                         | Logging                     | ✗   | ✗    | ✗  | rarely used - low prio
    --log-handler                    | Logging                     | ✓   | ✗    | ✗  | werkzeug:CRITICAL default
-   --log-level                      | Logging                     | ✗   | ✗    | ✗  | expose $ODOO_LOG_LEVEL
+   --log-level                      | Logging                     | ✓   | ✗    | ✓  | reads $ODOO_LOG_LEVEL
    --logfile                        | Logging                     | ✓   | ✗    | ✗  | /var/log/odoo/odoo.log when dir exists
-   --max-cron-threads               | Performance                 | ✗   | ✗    | ✗  | expose $ODOO_MAX_CRON_THREADS (default 2)
+   --max-cron-threads               | Performance                 | ✓   | ✗    | ✓  | reads $ODOO_MAX_CRON_THREADS (default 2)
    --netrpc / interface / port      | Legacy RPC                  | ✗   | ✗    | ✗  | rarely used nowadays - backlog
    --osv-memory-age-limit           | Legacy ORM                  | ✗   | ✗    | ✗  |
    --osv-memory-count-limit         | Legacy ORM                  | ✗   | ✗    | ✗  |
@@ -662,6 +662,14 @@ class EntrypointEnv(TypedDict):
     ODOO_ADDONS_TIMESTAMP: str
     ODOO_NO_AUTO_UPGRADE: str
 
+    # Additional runtime tunables (flag coverage TODO #2)
+    ODOO_DATA_DIR: str
+    ODOO_DBFILTER: str
+    ODOO_DEBUG: str
+    ODOO_EMAIL_FROM: str
+    ODOO_LOG_LEVEL: str
+    ODOO_MAX_CRON_THREADS: str
+
     # Runtime user
     PUID: str
     PGID: str
@@ -712,6 +720,13 @@ def gather_env(
         ODOO_ADDON_INIT_BLOCKLIST=_get("ODOO_ADDON_INIT_BLOCKLIST"),
         ODOO_ADDONS_TIMESTAMP=_get("ODOO_ADDONS_TIMESTAMP"),
         ODOO_NO_AUTO_UPGRADE=_get("ODOO_NO_AUTO_UPGRADE"),
+        # Extended flag coverage (see TODO #2)
+        ODOO_DATA_DIR=_get("ODOO_DATA_DIR"),
+        ODOO_DBFILTER=_get("ODOO_DBFILTER"),
+        ODOO_DEBUG=_get("ODOO_DEBUG"),
+        ODOO_EMAIL_FROM=_get("ODOO_EMAIL_FROM"),
+        ODOO_LOG_LEVEL=_get("ODOO_LOG_LEVEL"),
+        ODOO_MAX_CRON_THREADS=_get("ODOO_MAX_CRON_THREADS"),
         # Runtime user
         PUID=_get("PUID"),
         PGID=_get("PGID"),
@@ -1860,6 +1875,42 @@ def build_odoo_command(
 
     if env.get("ODOO_ADMIN_PASSWORD"):
         _add("--admin-passwd", env["ODOO_ADMIN_PASSWORD"])
+
+    # ------------------------------------------------------------------
+    # Extended flag coverage from TODO #2 (see module header)
+    # ------------------------------------------------------------------
+
+    # Data directory - allows operators to remap the filestore location.
+    if env.get("ODOO_DATA_DIR"):
+        _add("--data-dir", env["ODOO_DATA_DIR"])
+
+    # Database filtering (multi-db setups)
+    if env.get("ODOO_DBFILTER"):
+        _add("--dbfilter", env["ODOO_DBFILTER"])
+
+    # Debug helpers - most recent versions rely on the short `--debug` flag
+    # while older releases used `--debug-mode`.  We inject *both* so that the
+    # first supported one is honoured – the lexer stops parsing options as
+    # soon as it encounters an unknown flag therefore ordering is important.
+    # We keep the legacy long form **after** the modern one for maximal
+    # compatibility (new versions will ignore the extra token).
+    if env.get("ODOO_DEBUG") and env["ODOO_DEBUG"].lower() in {"1", "true", "yes", "on"}:
+        if not option_in_args("--debug", *argv):
+            argv.append("--debug")
+        if not option_in_args("--debug-mode", *argv):
+            argv.append("--debug-mode")
+
+    # Email defaults
+    if env.get("ODOO_EMAIL_FROM"):
+        _add("--email-from", env["ODOO_EMAIL_FROM"])
+
+    # Unified log level – let operators elevate or lower verbosity via env.
+    if env.get("ODOO_LOG_LEVEL"):
+        _add("--log-level", env["ODOO_LOG_LEVEL"])
+
+    # Cron threads parameter
+    if env.get("ODOO_MAX_CRON_THREADS"):
+        _add("--max-cron-threads", env["ODOO_MAX_CRON_THREADS"])
 
     # Final command: keep consistent with §7 - we omit `gosu` because the
     # Python entry-point already runs under the correct UID/GID when used as
