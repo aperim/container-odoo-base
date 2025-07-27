@@ -439,6 +439,19 @@ def _file_lock(target: Path):  # noqa: D401 - imperative mood
             # Close the fd obtained above – we will switch to *create* based lock.
             lock_fd.close()
 
+            # The *open* call above already created *lock_path* therefore the
+            # subsequent *O_CREAT|O_EXCL* attempts would *always* fail with
+            # ``EEXIST`` and the loop below would spin forever.  We therefore
+            # remove the pre-existing placeholder **before** switching to the
+            # creation-based fallback so that the first contender can acquire
+            # the lock immediately.  Any concurrent contenders that reach
+            # this point slightly later will either win the race themselves
+            # or observe the freshly created sentinel and enter the retry
+            # sleep, preserving the original mutual-exclusion guarantees.
+
+            with contextlib.suppress(FileNotFoundError):
+                lock_path.unlink(missing_ok=True)  # type: ignore[arg-type]
+
             # Spin until we successfully create the *sentinel* file.  The
             # operation is atomic therefore only **one** process will win
             # the race, the others will sleep and retry until the winner
