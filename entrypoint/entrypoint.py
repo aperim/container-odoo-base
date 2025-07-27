@@ -422,9 +422,44 @@ def _file_lock(target: Path):  # noqa: D401 - imperative mood
         yield
         return
 
+    # ------------------------------------------------------------------
+    # Try to obtain a *proper* advisory lock via fcntl.  Some distributed /
+    # network file-systems (e.g. Gluster, certain NFS setups or rclone
+    # mounts) do **not** support `flock(2)` and will raise *ENOTSUP*.
+    # In that case we transparently fall back to a *creation-based* lock
+    # which relies on the atomicity of `open(O_CREAT|O_EXCL)` – portable
+    # across virtually every POSIX compliant FS as long as it supports
+    # regular file creation.
+    # ------------------------------------------------------------------
+
     try:
         fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
-    except OSError as exc:  # pragma: no cover - rare, but play safe
+    except OSError as exc:
+        if exc.errno in {errno.ENOTSUP, errno.EOPNOTSUPP}:  # unsupported on FS
+            # Close the fd obtained above – we will switch to *create* based lock.
+            lock_fd.close()
+
+            # Spin until we successfully create the *sentinel* file.  The
+            # operation is atomic therefore only **one** process will win
+            # the race, the others will sleep and retry until the winner
+            # removes the sentinel in the *finally* block.
+            import time
+
+            while True:  # pragma: no cover – single pass in success path
+                try:
+                    sentinel_fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+                    break  # acquired
+                except FileExistsError:
+                    time.sleep(0.1)
+
+            try:
+                yield
+            finally:
+                os.close(sentinel_fd)
+                with contextlib.suppress(FileNotFoundError):
+                    lock_path.unlink(missing_ok=True)  # type: ignore[arg-type]
+            return
+
         if exc.errno not in {errno.EBADF, errno.EINVAL}:
             raise
         # Could not obtain lock - proceed unlocked but warn.
