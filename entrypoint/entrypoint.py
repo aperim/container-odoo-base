@@ -41,6 +41,7 @@ Section | Concern (Bash)                 | Python helper              | Status
 6       | Privilege drop (setuid/gid)    | drop_privileges            | ✓
 7       | Final Odoo command assembly    | build_odoo_command         | ✓
 7       | Runtime odoo.conf housekeeping | runtime_housekeeping       | ✓
+Misc    | Guarded writes (flock)         | _guarded_touch/write       | ✓
 Misc    | Detect custom user commands    | is_custom_command          | ✓
 Misc    | Add-on timestamp comparison    | update_needed              | ✓
 Main    | Overall container flow         | main                       | ✓
@@ -59,8 +60,7 @@ The Python port is feature-rich but **not yet a drop-in replacement** for the
 legacy shell script.  The following items still need work and are *deliberately*
 left out of scope for the current merge request:
 
-2. `flock`-style guard around writes to `/etc/odoo/.timestamp`.
-3. Additional proxy/logging flags not yet injected by `build_odoo_command()`.
+2. Additional proxy/logging flags not yet injected by `build_odoo_command()`.
 
 Keep the list in sync as the gaps are closed; update both this section **and**
 the status table above accordingly.
@@ -78,6 +78,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 import os
+import contextlib
 
 __all__ = [
     "parse_blocklist",
@@ -101,6 +102,9 @@ __all__ = [
     "runtime_housekeeping",
     "ADDON_TIMESTAMP_FILE",
     "SCAFFOLDED_SEMAPHORE",
+    "_file_lock",
+    "_guarded_touch",
+    "_guarded_write_text",
 ]
 
 
@@ -200,6 +204,86 @@ ADDON_TIMESTAMP_FILE = Path("/etc/odoo/.timestamp")
 # do for *ADDON_TIMESTAMP_FILE* above.
 
 SCAFFOLDED_SEMAPHORE = Path("/etc/odoo/.scaffolded")
+
+# ---------------------------------------------------------------------------
+#  Local file locking utilities
+# ---------------------------------------------------------------------------
+
+# Rationale: multiple Kubernetes pods may share the same persistent volume
+# therefore several replicas can *concurrently* attempt to update semaphore
+# files (.scaffolded, .timestamp) or the central configuration file
+# (odoo.conf).  The historical Bash entry-point relied on `flock` to
+# serialise those writes.  We replicate the behaviour here with a minimal
+# wrapper that gracefully degrades when the underlying filesystem or the
+# executing user does not allow creating the lock file (unit-test and
+# read-only scenarios).
+
+
+@contextlib.contextmanager  # type: ignore[misc]
+def _file_lock(target: Path):  # noqa: D401 – imperative mood
+    """Context-manager acquiring an *exclusive* lock for *target*.
+
+    The lock is implemented via :pyfunc:`fcntl.flock` on a sibling file named
+    ``<target>.lock`` – the same convention used by the original shell
+    script.  The helper is *best-effort*: in environments where the lock file
+    cannot be created (lack of permission) we silently yield without holding
+    a lock so that the rest of the entry-point keeps working.  A warning is
+    still printed so operators are aware of the degraded safety.
+    """
+
+    import errno
+    import fcntl  # Only available on POSIX – the image runs on Linux.
+    import sys as _sys
+
+    lock_path = target.with_suffix(target.suffix + ".lock") if target.suffix else Path(str(target) + ".lock")
+
+    try:
+        lock_fd = lock_path.open("a+b")  # create if missing, binary for portability
+    except (PermissionError, FileNotFoundError) as exc:  # pragma: no cover – dev env without /etc/odoo access
+        print(
+            f"[entrypoint] WARNING: cannot create lock file {lock_path} ({exc}). Proceeding without lock.",
+            file=_sys.stderr,
+        )
+        yield
+        return
+
+    try:
+        fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+    except OSError as exc:  # pragma: no cover – rare, but play safe
+        if exc.errno not in {errno.EBADF, errno.EINVAL}:
+            raise
+        # Could not obtain lock – proceed unlocked but warn.
+        print(
+            f"[entrypoint] WARNING: failed to acquire lock on {lock_path} ({exc}).", file=_sys.stderr,
+        )
+        lock_fd.close()
+        yield
+        return
+
+    try:
+        yield
+    finally:
+        try:
+            fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+        except OSError:  # pragma: no cover – best-effort cleanup
+            pass
+        lock_fd.close()
+
+
+def _guarded_touch(path: Path) -> None:  # noqa: D401 – imperative mood
+    """Safely create *path* while holding its sibling lock file."""
+
+    with _file_lock(path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch(exist_ok=True)
+
+
+def _guarded_write_text(path: Path, data: str, *, encoding: str = "utf-8") -> None:  # noqa: D401
+    """Write *data* to *path* under an exclusive lock."""
+
+    with _file_lock(path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(data, encoding=encoding)
 
 
 def parse_blocklist(value: str | None) -> list[str]:
@@ -518,6 +602,118 @@ def wait_for_dependencies(env: EntrypointEnv | None = None) -> None:  # noqa: D4
 
     env = gather_env(env)
 
+    # Serialise modifications to the persistent configuration file so that
+    # multiple replicas do not step on each other toes.  The lock is *best
+    # effort* – when the process lacks permission to create the file we
+    # continue unlocked but still print a warning (handled inside
+    # :pyfunc:`_file_lock`).
+
+    _config_path = Path("/etc/odoo/odoo.conf")
+
+    with _file_lock(_config_path):
+        _runtime_housekeeping_impl(env)
+
+
+# Wrapped implementation kept separate to avoid an overly large diff – the
+# function above now delegates to this inner helper so that the surrounding
+# lock context does not clutter the original business logic.
+
+
+def _runtime_housekeeping_impl(env: EntrypointEnv) -> None:  # noqa: D401 – internal helper
+    """Actual body of *runtime_housekeeping* (see doc-string above)."""
+
+    import subprocess
+    import sys as _sys
+
+    def _call(cmd: list[str]) -> bool:  # noqa: WPS430 – tiny nested helper
+        """Wrapper around *subprocess.run* that tolerates missing binary."""
+
+        try:
+            subprocess.run(cmd, check=True)
+        except FileNotFoundError:
+            # Development environment – helper binary not present.  Emit a
+            # warning once then disable the rest of the routine.
+            print(
+                f"[entrypoint] dev-mode - '{cmd[0]}' not found, skipping runtime housekeeping",
+                file=_sys.stderr,
+            )
+            return False
+        return True
+
+    # 1. Master password – executed unconditionally because the helper deals
+    #    with absent environment variables on its own.
+    if not _call(["odoo-config", "--set-admin-password"]):
+        return  # helper missing – nothing else to do
+
+    # 2. Redis section – idem.
+    _call(["odoo-config", "--set-redis-config"])
+
+    # 3. Dynamic *options* – build a mapping keyed by the configuration
+    #    directive name then iterate so that each pair is persisted via a
+    #    dedicated *odoo-config set* invocation.  We deliberately keep each
+    #    call *independent* because the helper exits non-zero on invalid
+    #    inputs and we want the entry-point to fail fast with a clear error
+    #    message that pin-points the problematic option.
+
+    # 3.1 Add-ons path – may legitimately be empty when the container ships
+    #     with **no** modules (extremely slim test images).  In that case we
+    #     simply skip the key instead of writing an empty string which would
+    #     override any user customisation.
+
+    import sys as _sys2  # noqa: WPS433 – local import, avoids polluting globals
+
+    pkg_mod = _sys2.modules.get("entrypoint")
+    if pkg_mod is None:  # pragma: no cover – safety net, should never happen
+        addons_paths = get_addons_paths(env)
+    else:
+        addons_paths = getattr(pkg_mod, "get_addons_paths", get_addons_paths)(env)  # type: ignore[arg-type]
+
+    options: dict[str, str] = {}
+    if addons_paths:
+        options["addons_path"] = ",".join(addons_paths)
+
+    # 3.2 Database connection – PgBouncer takes precedence to preserve the
+    #     same rules as :pyfunc:`build_odoo_command`.
+
+    if env.get("PGBOUNCER_HOST"):
+        options.update(
+            {
+                "db_host": env["PGBOUNCER_HOST"],
+                "db_port": env["PGBOUNCER_PORT"],
+                "db_sslmode": env["PGBOUNCER_SSL_MODE"],
+            }
+        )
+
+        if env.get("POSTGRES_SSL_ROOT_CERT"):
+            options["db_sslrootcert"] = env["POSTGRES_SSL_ROOT_CERT"]
+    else:
+        options.update(
+            {
+                "db_host": env["POSTGRES_HOST"],
+                "db_port": env["POSTGRES_PORT"],
+                "db_user": env["POSTGRES_USER"],
+                "db_password": env["POSTGRES_PASSWORD"],
+                "db_sslmode": env["POSTGRES_SSL_MODE"],
+            }
+        )
+
+        # Optional client-side TLS parameters.
+        if env.get("POSTGRES_SSL_CERT"):
+            options["db_sslcert"] = env["POSTGRES_SSL_CERT"]
+        if env.get("POSTGRES_SSL_KEY"):
+            options["db_sslkey"] = env["POSTGRES_SSL_KEY"]
+        if env.get("POSTGRES_SSL_ROOT_CERT"):
+            options["db_sslrootcert"] = env["POSTGRES_SSL_ROOT_CERT"]
+        if env.get("POSTGRES_SSL_CRL"):
+            options["db_sslcrl"] = env["POSTGRES_SSL_CRL"]
+
+    # 3.3 Persist every gathered option.  We iter *sorted()* keys so that the
+    #     sequence is *deterministic* – this is crucial for repeatable unit
+    #     tests that assert the exact subprocess invocations.
+
+    for key in sorted(options):
+        _call(["odoo-config", "set", "options", key, options[key]])  # type: ignore[index]
+
     # ------------------------------------------------------------------
     # Allow tests to monkey-patch helpers on the *package* re-export.  We must
     # therefore resolve them dynamically from there instead of using the
@@ -773,8 +969,7 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
 
             scaffold_path: Path = SCAFFOLDED_SEMAPHORE
             try:
-                scaffold_path.parent.mkdir(parents=True, exist_ok=True)
-                scaffold_path.touch(exist_ok=True)
+                _guarded_touch(scaffold_path)
             except (PermissionError, FileNotFoundError):  # pragma: no cover
                 print(
                     f"[entrypoint] WARNING: could not create scaffold semaphore at {scaffold_path}",
@@ -784,8 +979,7 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
             if env.get("ODOO_ADDONS_TIMESTAMP"):
                 ts_path: Path = ADDON_TIMESTAMP_FILE
                 try:
-                    ts_path.parent.mkdir(parents=True, exist_ok=True)
-                    ts_path.write_text(env["ODOO_ADDONS_TIMESTAMP"], encoding="utf-8")
+                    _guarded_write_text(ts_path, env["ODOO_ADDONS_TIMESTAMP"], encoding="utf-8")
                 except (PermissionError, FileNotFoundError):  # pragma: no cover
                     print(
                         f"[entrypoint] WARNING: could not write timestamp file to {ts_path}",
@@ -904,8 +1098,7 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
 
     scaffold_path: Path = getattr(_modules[__name__], "SCAFFOLDED_SEMAPHORE")  # type: ignore[assignment]
     try:
-        scaffold_path.parent.mkdir(parents=True, exist_ok=True)
-        scaffold_path.touch(exist_ok=True)
+        _guarded_touch(scaffold_path)
     except (PermissionError, FileNotFoundError):  # pragma: no cover – unprivileged or stubbed
         # Either the process lacks permission to create files under */etc/odoo*
         # (typical for unit-test environments running as an unprivileged user)
@@ -921,8 +1114,7 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     if env.get("ODOO_ADDONS_TIMESTAMP"):
         ts_path: Path = getattr(_modules[__name__], "ADDON_TIMESTAMP_FILE")  # type: ignore[assignment]
         try:
-            ts_path.parent.mkdir(parents=True, exist_ok=True)
-            ts_path.write_text(env["ODOO_ADDONS_TIMESTAMP"], encoding="utf-8")
+            _guarded_write_text(ts_path, env["ODOO_ADDONS_TIMESTAMP"], encoding="utf-8")
         except (PermissionError, FileNotFoundError):  # pragma: no cover – see above
             print(
                 f"[entrypoint] WARNING: could not write timestamp file to {ts_path}",
@@ -1065,8 +1257,7 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
         # boot does not come back here.
         ts_file: Path = getattr(_modules[__name__], "ADDON_TIMESTAMP_FILE")  # type: ignore[assignment]
         if env.get("ODOO_ADDONS_TIMESTAMP"):
-            ts_file.parent.mkdir(parents=True, exist_ok=True)
-            ts_file.write_text(env["ODOO_ADDONS_TIMESTAMP"], encoding="utf-8")
+            _guarded_write_text(ts_file, env["ODOO_ADDONS_TIMESTAMP"], encoding="utf-8")
 
         if _held_lock and _lock_mod is not None:
             try:
@@ -1150,8 +1341,7 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     ts_file: Path = getattr(_modules[__name__], "ADDON_TIMESTAMP_FILE")  # type: ignore[assignment]
     if env.get("ODOO_ADDONS_TIMESTAMP"):
         try:
-            ts_file.parent.mkdir(parents=True, exist_ok=True)
-            ts_file.write_text(env["ODOO_ADDONS_TIMESTAMP"], encoding="utf-8")
+            _guarded_write_text(ts_file, env["ODOO_ADDONS_TIMESTAMP"], encoding="utf-8")
         except (PermissionError, FileNotFoundError):  # pragma: no cover - unprivileged test env
             # Development/test environments running under a non-root user do
             # not have permission to create */etc/odoo*.  Falling back to a
@@ -1202,101 +1392,12 @@ def runtime_housekeeping(env: EntrypointEnv | None = None) -> None:  # noqa: D40
        two sources regardless of which method the user relies on.
     """
 
-    import subprocess
-
     env = gather_env(env)
 
-    import sys as _sys
+    _config_path = Path("/etc/odoo/odoo.conf")
 
-    def _call(cmd: list[str]) -> bool:  # noqa: WPS430 – tiny nested helper
-        """Wrapper around *subprocess.run* that tolerates missing binary."""
-
-        try:
-            subprocess.run(cmd, check=True)
-        except FileNotFoundError:
-            # Development environment – helper binary not present.  Emit a
-            # warning once then disable the rest of the routine.
-            print(
-                f"[entrypoint] dev-mode - '{cmd[0]}' not found, skipping runtime housekeeping",
-                file=_sys.stderr,
-            )
-            return False
-        return True
-
-    # 1. Master password – executed unconditionally because the helper deals
-    #    with absent environment variables on its own.
-    if not _call(["odoo-config", "--set-admin-password"]):
-        return  # helper missing – nothing else to do
-
-    # 2. Redis section – idem.
-    _call(["odoo-config", "--set-redis-config"])
-
-    # 3. Dynamic *options* – build a mapping keyed by the configuration
-    #    directive name then iterate so that each pair is persisted via a
-    #    dedicated *odoo-config set* invocation.  We deliberately keep each
-    #    call *independent* because the helper exits non-zero on invalid
-    #    inputs and we want the entry-point to fail fast with a clear error
-    #    message that pin-points the problematic option.
-
-    # 3.1 Add-ons path – may legitimately be empty when the container ships
-    #     with **no** modules (extremely slim test images).  In that case we
-    #     simply skip the key instead of writing an empty string which would
-    #     override any user customisation.
-
-    # Resolve helper from *package* namespace to play nicely with monkeypatch.
-    import sys as _sys  # noqa: WPS433 – local import, avoids polluting globals
-
-    pkg_mod = _sys.modules.get("entrypoint")
-    if pkg_mod is None:  # pragma: no cover – safety net, should never happen
-        addons_paths = get_addons_paths(env)
-    else:
-        addons_paths = getattr(pkg_mod, "get_addons_paths", get_addons_paths)(env)  # type: ignore[arg-type]
-
-    options: dict[str, str] = {}
-    if addons_paths:
-        options["addons_path"] = ",".join(addons_paths)
-
-    # 3.2 Database connection – PgBouncer takes precedence to preserve the
-    #     same rules as :pyfunc:`build_odoo_command`.
-
-    if env.get("PGBOUNCER_HOST"):
-        options.update(
-            {
-                "db_host": env["PGBOUNCER_HOST"],
-                "db_port": env["PGBOUNCER_PORT"],
-                "db_sslmode": env["PGBOUNCER_SSL_MODE"],
-            }
-        )
-
-        if env.get("POSTGRES_SSL_ROOT_CERT"):
-            options["db_sslrootcert"] = env["POSTGRES_SSL_ROOT_CERT"]
-    else:
-        options.update(
-            {
-                "db_host": env["POSTGRES_HOST"],
-                "db_port": env["POSTGRES_PORT"],
-                "db_user": env["POSTGRES_USER"],
-                "db_password": env["POSTGRES_PASSWORD"],
-                "db_sslmode": env["POSTGRES_SSL_MODE"],
-            }
-        )
-
-        # Optional client-side TLS parameters.
-        if env.get("POSTGRES_SSL_CERT"):
-            options["db_sslcert"] = env["POSTGRES_SSL_CERT"]
-        if env.get("POSTGRES_SSL_KEY"):
-            options["db_sslkey"] = env["POSTGRES_SSL_KEY"]
-        if env.get("POSTGRES_SSL_ROOT_CERT"):
-            options["db_sslrootcert"] = env["POSTGRES_SSL_ROOT_CERT"]
-        if env.get("POSTGRES_SSL_CRL"):
-            options["db_sslcrl"] = env["POSTGRES_SSL_CRL"]
-
-    # 3.3 Persist every gathered option.  We iter *sorted()* keys so that the
-    #     sequence is *deterministic* – this is crucial for repeatable unit
-    #     tests that assert the exact subprocess invocations.
-
-    for key in sorted(options):
-        _call(["odoo-config", "set", "options", key, options[key]])  # type: ignore[index]
+    with _file_lock(_config_path):
+        _runtime_housekeeping_impl(env)
 
 
 def build_odoo_command(
