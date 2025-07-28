@@ -1,0 +1,43 @@
+{
+  "env": {
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "0",
+    "DISABLE_TELEMETRY": "1",
+    "DISABLE_ERROR_REPORTING": "1"
+  },
+  "includeCoAuthoredBy": true,
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Read(*)",
+      "Write(*)",
+      "Edit(*)",
+      "MultiEdit(*)",
+      "Glob(*)",
+      "Grep(*)",
+      "LS(*)",
+      "WebFetch(*)",
+      "WebSearch(*)",
+      "NotebookRead(*)",
+      "NotebookEdit(*)",
+      "TodoRead(*)",
+      "TodoWrite(*)",
+      "Task(*)",
+      "Agent(*)",
+      "mcp__*__*",
+      "Bash(python -m pytest tests/test_entrypoint_legacy_rpc_flags_py.py -xvs)",
+      "Bash(python:*)",
+      "Bash(ls:*)",
+      "Bash(/usr/local/py-utils/bin/pytest tests/test_entrypoint_legacy_rpc_flags_py.py -xvs)",
+      "Bash(/usr/local/py-utils/bin/pytest tests/test_entrypoint_build_cmd_todo2_complete_py.py -xvs)",
+      "Bash(/usr/local/py-utils/bin/pytest tests/test_entrypoint_file_lock_improvements_py.py -xvs)",
+      "Bash(/usr/local/py-utils/bin/pytest tests/test_entrypoint_file_lock_improvements_py.py::test_file_lock_complete_failure_fallback -xvs)",
+      "Bash(/usr/local/py-utils/bin/pytest tests/test_entrypoint_file_lock_network_fs.py tests/test_entrypoint_semaphore_lock_py.py -xvs)",
+      "Bash(/usr/local/py-utils/bin/pytest tests/test_entrypoint_file_lock_network_fs.py -xvs)",
+      "Bash(/usr/local/py-utils/bin/pytest tests/test_entrypoint_pid_handoff_py.py -xvs)",
+      "Bash(/usr/local/py-utils/bin/pytest tests/test_entrypoint_pid_handoff_verification_py.py -xvs)"
+    ],
+    "deny": []
+  },
+  "model": "claude-4-sonnet",
+  "enableAllProjectMcpServers": true
+}

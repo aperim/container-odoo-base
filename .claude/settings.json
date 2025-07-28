@@ -1,0 +1,32 @@
+{
+  "model": "claude-4-sonnet",
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Read(*)",
+      "Write(*)", 
+      "Edit(*)",
+      "MultiEdit(*)",
+      "Glob(*)",
+      "Grep(*)",
+      "LS(*)",
+      "WebFetch(*)",
+      "WebSearch(*)",
+      "NotebookRead(*)",
+      "NotebookEdit(*)",
+      "TodoRead(*)",
+      "TodoWrite(*)",
+      "Task(*)",
+      "Agent(*)",
+      "mcp__*__*"
+    ],
+    "deny": []
+  },
+  "env": {
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "0",
+    "DISABLE_TELEMETRY": "1",
+    "DISABLE_ERROR_REPORTING": "1"
+  },
+  "includeCoAuthoredBy": true,
+  "enableAllProjectMcpServers": true
+}

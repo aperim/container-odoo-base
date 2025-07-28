@@ -10,6 +10,8 @@
 			"enableNonRootDocker": "true",
 			"moby": "true"
 		},
+		"ghcr.io/devcontainers-extra/features/gh-cli:1": {},
+		"ghcr.io/devcontainers-extra/features/gh-release:1": {},
 		"ghcr.io/devcontainers/features/common-utils:2": {
 			"installZsh": true,
 			"configureZshAsDefaultShell": true,
@@ -71,7 +73,8 @@
 				"GitHub.remotehub",
 				"github.vscode-github-actions",
 				"Odoo.odoo",
-				"ms-python.autopep8"
+				"ms-python.autopep8",
+				"Anthropic.claude-code"
 			]
 		}
 	},
