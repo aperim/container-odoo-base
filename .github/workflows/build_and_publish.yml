@@ -246,6 +246,22 @@ jobs:
         run: |
           pip install -r requirements.txt
 
+      # Run mypy type checking
+      - name: Run mypy type checking
+        shell: bash
+        continue-on-error: ${{ github.event_name != 'release' && github.ref != 'refs/heads/main' }}
+        run: |
+          echo "Running mypy type checking..."
+          if [[ "${GITHUB_REF}" == "refs/heads/main" ]] || [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
+            echo "Strict mode for mypy; failing on type errors."
+            set -e
+            python3 -m mypy entrypoint
+          else
+            echo "Non-strict mode for mypy; not failing on type errors."
+            set +e
+            python3 -m mypy entrypoint
+          fi
+
       # Run Python unit tests
       - name: Run Python tests
         shell: bash

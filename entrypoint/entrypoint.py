@@ -204,6 +204,7 @@ entry-point as a strict drop-in replacement for the historical `entrypoint.sh`.
 from __future__ import annotations
 from typing import TypedDict, Any, Generator
 from os import environ
+from types import ModuleType
 
 import ast
 import re
@@ -258,7 +259,7 @@ def compute_workers(cpu_count: int | None = None) -> int:  # noqa: D401 - impera
     """
 
     try:
-        cpus = int(cpu_count) if cpu_count is not None else os.cpu_count() or 1  # type: ignore[arg-type]
+        cpus = int(cpu_count) if cpu_count is not None else os.cpu_count() or 1
     except (TypeError, ValueError):  # pragma: no cover - defensive fallback
         cpus = 1
 
@@ -392,7 +393,7 @@ SCAFFOLDED_SEMAPHORE = Path("/etc/odoo/.scaffolded")
 # read-only scenarios).
 
 
-@contextlib.contextmanager  # type: ignore[misc]
+@contextlib.contextmanager
 def _file_lock(target: Path) -> Generator[None, None, None]:  # noqa: D401 - imperative mood
     """Context-manager acquiring an *exclusive* lock for *target*.
 
@@ -462,7 +463,7 @@ def _file_lock(target: Path) -> Generator[None, None, None]:  # noqa: D401 - imp
             # sleep, preserving the original mutual-exclusion guarantees.
 
             with contextlib.suppress(FileNotFoundError):
-                lock_path.unlink(missing_ok=True)  # type: ignore[arg-type]
+                lock_path.unlink(missing_ok=True)
 
             # Spin until we successfully create the *sentinel* file.  The
             # operation is atomic therefore only **one** process will win
@@ -482,7 +483,7 @@ def _file_lock(target: Path) -> Generator[None, None, None]:  # noqa: D401 - imp
             finally:
                 os.close(sentinel_fd)
                 with contextlib.suppress(FileNotFoundError):
-                    lock_path.unlink(missing_ok=True)  # type: ignore[arg-type]
+                    lock_path.unlink(missing_ok=True)
             return
 
         if exc.errno in {errno.EBADF, errno.EINVAL}:
@@ -513,7 +514,7 @@ def _file_lock(target: Path) -> Generator[None, None, None]:  # noqa: D401 - imp
             finally:
                 os.close(sentinel_fd)
                 with contextlib.suppress(FileNotFoundError):
-                    lock_path.unlink(missing_ok=True)  # type: ignore[arg-type]
+                    lock_path.unlink(missing_ok=True)
             return
         else:
             # Other unexpected errors - re-raise to avoid silent failures
@@ -1031,8 +1032,7 @@ def wait_for_dependencies(env: EntrypointEnv | None = None) -> None:  # noqa: D4
     # ------------------------------------------------------------------
 
     try:
-        from tools.src.lock_handler import wait_for_redis  # type: ignore
-
+        from tools.src.lock_handler import wait_for_redis
         wait_for_redis()
     except ModuleNotFoundError:  # helper script missing – decide fail-fast or dev-mode
         import os as _os
@@ -1080,7 +1080,7 @@ def wait_for_dependencies(env: EntrypointEnv | None = None) -> None:  # noqa: D4
 
         _wfp = _sys_wfp.modules.get("tools.src.wait_for_postgres")
         if _wfp is None:  # first import - fall back to standard machinery
-            _wfp = _imp("tools.src.wait_for_postgres")  # type: ignore[assignment]
+            _wfp = _imp("tools.src.wait_for_postgres")
 
         if env.get("PGBOUNCER_HOST"):
             _wfp.wait_for_pgbouncer(
@@ -1176,7 +1176,7 @@ def _runtime_housekeeping_impl(env: EntrypointEnv) -> None:  # noqa: D401 - inte
     if pkg_mod is None:  # pragma: no cover - safety net, should never happen
         addons_paths = get_addons_paths(env)
     else:
-        addons_paths = getattr(pkg_mod, "get_addons_paths", get_addons_paths)(env)  # type: ignore[arg-type]
+        addons_paths = getattr(pkg_mod, "get_addons_paths", get_addons_paths)(env)
 
     options: dict[str, str] = {}
     if addons_paths:
@@ -1222,7 +1222,7 @@ def _runtime_housekeeping_impl(env: EntrypointEnv) -> None:  # noqa: D401 - inte
     #     tests that assert the exact subprocess invocations.
 
     for key in sorted(options):
-        _call(["odoo-config", "set", "options", key, options[key]])  # type: ignore[index]
+        _call(["odoo-config", "set", "options", key, options[key]])
 
     # ------------------------------------------------------------------
     # Allow tests to monkey-patch helpers on the *package* re-export.  We must
@@ -1232,7 +1232,7 @@ def _runtime_housekeeping_impl(env: EntrypointEnv) -> None:  # noqa: D401 - inte
 
     import sys as _sys  # noqa: WPS433 - local import keeps global scope clean
 
-    pkg_mod = _sys.modules.get("entrypoint")  # type: ignore[assignment]
+    pkg_mod = _sys.modules.get("entrypoint")
 
     # Ensure we reference the *package*-level module so that any monkey-patch
     # applied by callers (or the test-suite) becomes visible inside this
@@ -1255,8 +1255,7 @@ def _runtime_housekeeping_impl(env: EntrypointEnv) -> None:  # noqa: D401 - inte
     # ------------------------------------------------------------------
 
     try:
-        from tools.src.lock_handler import wait_for_redis  # type: ignore
-
+        from tools.src.lock_handler import wait_for_redis
         wait_for_redis()  # blocks until Redis replies to PING
     except ModuleNotFoundError:  # pragma: no cover - missing optional dep
         # The helper script may be absent from *editable installs* of the
@@ -1280,8 +1279,7 @@ def _runtime_housekeeping_impl(env: EntrypointEnv) -> None:  # noqa: D401 - inte
     # ------------------------------------------------------------------
 
     try:
-        from tools.src import wait_for_postgres as _wfp  # type: ignore
-
+        from tools.src import wait_for_postgres as _wfp
         if env.get("PGBOUNCER_HOST"):
             try:
                 _wfp.wait_for_pgbouncer(
@@ -1462,9 +1460,9 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     # unit-tests run unchanged.
     # ------------------------------------------------------------------
 
-    _lock_mod: Any | None
+    _lock_mod: ModuleType | None
     try:
-        from tools.src import lock_handler as _lock_mod  # type: ignore
+        from tools.src import lock_handler as _lock_mod
     except ModuleNotFoundError:  # pragma: no cover - editable installs
         _lock_mod = None
 
@@ -1648,7 +1646,7 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     #    expensive initialisation path.
     # ------------------------------------------------------------------
 
-    scaffold_path: Path = getattr(_modules[__name__], "SCAFFOLDED_SEMAPHORE")  # type: ignore[assignment]
+    scaffold_path: Path = getattr(_modules[__name__], "SCAFFOLDED_SEMAPHORE")  # type: ignore[no-redef]
     try:
         _guarded_touch(scaffold_path)
     except (PermissionError, FileNotFoundError):  # pragma: no cover - unprivileged or stubbed
@@ -1664,7 +1662,7 @@ def initialise_instance(env: EntrypointEnv | None = None) -> None:  # noqa: D401
         )
 
     if env.get("ODOO_ADDONS_TIMESTAMP"):
-        ts_path: Path = getattr(_modules[__name__], "ADDON_TIMESTAMP_FILE")  # type: ignore[assignment]
+        ts_path: Path = getattr(_modules[__name__], "ADDON_TIMESTAMP_FILE")  # type: ignore[no-redef]
         try:
             _guarded_write_text(ts_path, env["ODOO_ADDONS_TIMESTAMP"], encoding="utf-8")
         except (PermissionError, FileNotFoundError):  # pragma: no cover - see above
@@ -1710,9 +1708,9 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     # The behaviour mirrors *initialise_instance* (see above).
     # ------------------------------------------------------------------
 
-    _lock_mod: Any | None
+    _lock_mod: ModuleType | None
     try:
-        from tools.src import lock_handler as _lock_mod  # type: ignore
+        from tools.src import lock_handler as _lock_mod
     except ModuleNotFoundError:  # pragma: no cover
         _lock_mod = None
 
@@ -1745,7 +1743,7 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     # subsequent lookups reuse the same object.
 
     import sys as _sys  # noqa: WPS433 - local import inside function scope
-    pkg_mod = _sys.modules.get("entrypoint")  # type: ignore[assignment]
+    pkg_mod = _sys.modules.get("entrypoint")
 
     if env.get("ODOO_NO_AUTO_UPGRADE"):
         # Environment flag present → completely skip the routine so that
@@ -1758,7 +1756,7 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
                 pass
         return
 
-    _update_needed = getattr(pkg_mod, "update_needed", update_needed)  # type: ignore[attr-defined]
+    _update_needed = getattr(pkg_mod, "update_needed", update_needed)
     if not _update_needed(env):
         if _held_lock and _lock_mod is not None:
             try:
@@ -1794,10 +1792,10 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     if pkg_mod is None:  # extremely unlikely, defensive guard
         addons_paths = get_addons_paths(env)
     else:
-        addons_paths = getattr(pkg_mod, "get_addons_paths", get_addons_paths)(env)  # type: ignore[arg-type]
+        addons_paths = getattr(pkg_mod, "get_addons_paths", get_addons_paths)(env)
     modules: list[str] = []
     if addons_paths:
-        _collect_addons = getattr(pkg_mod, "collect_addons", collect_addons)  # type: ignore[attr-defined]
+        _collect_addons = getattr(pkg_mod, "collect_addons", collect_addons)
         modules = _collect_addons(
             [Path(p) for p in addons_paths],
             languages=env.get("ODOO_LANGUAGES", "").split(","),
@@ -1807,7 +1805,7 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     if not modules:
         # Nothing to upgrade - still refresh the timestamp so that the next
         # boot does not come back here.
-        ts_file: Path = getattr(_modules[__name__], "ADDON_TIMESTAMP_FILE")  # type: ignore[assignment]
+        ts_file: Path = getattr(_modules[__name__], "ADDON_TIMESTAMP_FILE")
         if env.get("ODOO_ADDONS_TIMESTAMP"):
             _guarded_write_text(ts_file, env["ODOO_ADDONS_TIMESTAMP"], encoding="utf-8")
 
@@ -1890,7 +1888,7 @@ def upgrade_modules(env: EntrypointEnv | None = None) -> None:  # noqa: D401
     #    immediate upgrade on the next boot.
     # --------------------------------------------------------------
 
-    ts_file: Path = getattr(_modules[__name__], "ADDON_TIMESTAMP_FILE")  # type: ignore[assignment]
+    ts_file: Path = getattr(_modules[__name__], "ADDON_TIMESTAMP_FILE")  # type: ignore[no-redef]
     if env.get("ODOO_ADDONS_TIMESTAMP"):
         try:
             _guarded_write_text(ts_file, env["ODOO_ADDONS_TIMESTAMP"], encoding="utf-8")

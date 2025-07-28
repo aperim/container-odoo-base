@@ -1,8 +1,21 @@
 {
-  "model": "claude-4-sonnet",
+  "model": "claude-opus-4-20250514",
   "permissions": {
     "allow": [
       "Bash(*)",
+      "Bash",
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(git:*)",
+      "Bash(npm:*)",
+      "Bash(pip:*)",
+      "Bash(docker:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
       "Read(*)",
       "Write(*)", 
       "Edit(*)",
@@ -18,8 +31,7 @@
       "TodoWrite(*)",
       "Task(*)",
       "Agent(*)",
-      "mcp__*__*"
-    ],
+      "mcp__*__*"    ],
     "deny": []
   },
   "env": {
