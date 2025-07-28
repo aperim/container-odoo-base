@@ -1,0 +1,99 @@
+version: '3.8'
+
+# Local testing environment for the entrypoint script
+# Usage: docker-compose -f entrypoint/test/docker-compose.yml up
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: odoo
+      POSTGRES_PASSWORD: odoo
+      POSTGRES_DB: odoo
+    ports:
+      - "15432:5432"  # Different port to avoid conflicts
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U odoo"]
+      interval: 2s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "16379:6379"  # Different port to avoid conflicts
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 5
+
+  # Test the entrypoint without building the full image
+  test-entrypoint:
+    image: python:3.11-slim
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # Database connection
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: odoo
+      POSTGRES_PASSWORD: odoo
+      POSTGRES_DB: odoo
+      # Redis connection
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # Development mode for testing without full Odoo
+      ENTRYPOINT_DEV_MODE: "1"
+      # Test various configurations
+      ODOO_LOG_LEVEL: debug
+      ODOO_WITHOUT_DEMO: "true"
+      PUID: "1000"
+      PGID: "1000"
+    volumes:
+      - ../..:/workspaces/container-odoo-base:ro
+      - ./test-data:/var/lib/odoo
+      - ./test-config:/etc/odoo
+    working_dir: /workspaces/container-odoo-base
+    command: ["python3", "entrypoint/entrypoint.py", "--version"]
+    networks:
+      - test-network
+
+  # Interactive shell for debugging
+  debug-shell:
+    image: python:3.11-slim
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: odoo
+      POSTGRES_PASSWORD: odoo
+      POSTGRES_DB: odoo
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      ENTRYPOINT_DEV_MODE: "1"
+    volumes:
+      - ../..:/workspaces/container-odoo-base:ro
+      - ./test-data:/var/lib/odoo
+      - ./test-config:/etc/odoo
+    working_dir: /workspaces/container-odoo-base
+    command: ["/bin/bash"]
+    stdin_open: true
+    tty: true
+    networks:
+      - test-network
+
+networks:
+  test-network:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:

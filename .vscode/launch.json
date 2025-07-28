@@ -1,0 +1,70 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug Entrypoint",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/entrypoint/entrypoint.py",
+            "args": ["--version"],
+            "console": "integratedTerminal",
+            "env": {
+                "POSTGRES_HOST": "localhost",
+                "POSTGRES_PORT": "15432",
+                "POSTGRES_USER": "odoo",
+                "POSTGRES_PASSWORD": "odoo",
+                "POSTGRES_DB": "odoo",
+                "REDIS_HOST": "localhost",
+                "REDIS_PORT": "16379",
+                "ENTRYPOINT_DEV_MODE": "1",
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Debug Entrypoint (Full Init)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/entrypoint/entrypoint.py",
+            "args": [],
+            "console": "integratedTerminal",
+            "env": {
+                "POSTGRES_HOST": "localhost",
+                "POSTGRES_PORT": "15432",
+                "POSTGRES_USER": "odoo",
+                "POSTGRES_PASSWORD": "odoo",
+                "POSTGRES_DB": "odoo",
+                "REDIS_HOST": "localhost",
+                "REDIS_PORT": "16379",
+                "ENTRYPOINT_DEV_MODE": "1",
+                "ODOO_WITHOUT_DEMO": "true",
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Debug Entrypoint (Custom Command)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/entrypoint/entrypoint.py",
+            "args": ["echo", "Hello from custom command"],
+            "console": "integratedTerminal",
+            "env": {
+                "ENTRYPOINT_DEV_MODE": "1",
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Run Entrypoint Tests",
+            "type": "python",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "tests/test_entrypoint_*.py",
+                "-v"
+            ],
+            "console": "integratedTerminal",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        }
+    ]
+}
