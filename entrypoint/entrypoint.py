@@ -163,15 +163,16 @@ script *production-ready*:
      differential strategy (e.g. `chown --from`) AND allow users to opt
      out through an environment variable.
 
-5. Dependency wait helpers
-   * The function correctly delegates to external binaries but we still
-     rely on the *best-effort* fall-back behaviour when those helpers are
-     absent.  Production images should fail fast.
+5. Dependency wait helpers - **Done** :heavy_check_mark:
+   * The function correctly delegates to external binaries and **fails fast**
+     in production when helpers are absent. Development mode can be enabled
+     via `ENTRYPOINT_DEV_MODE=1` or `PYTEST_CURRENT_TEST` for backwards
+     compatibility.
 
-6. `compute_http_interface()` default
+6. `compute_http_interface()` default - **Done** :heavy_check_mark:
    * The helper reads the Odoo major version from `ODOO_MAJOR_VERSION` when
-     the caller does not pass an explicit value.  When unavailable, the binary
-     should be used to attempt to determine the version.
+     available, and **automatically detects** the version by executing
+     `odoo --version` when the environment variable is not set.
 
 7. Red / black semaphore race conditions - **Done** :heavy_check_mark:
    * Enhanced `_file_lock()` to provide robust mutual exclusion in all cases:
@@ -181,16 +182,15 @@ script *production-ready*:
      - Re-raises unexpected errors instead of silently proceeding
      All semaphore locking now properly supports local and remote file systems.
 
-8. Type coverage & static analysis
-   * The public API is fully typed, but **mypy** is not yet part of the CI
-     pipeline.  Enable it and fix the (few) remaining `Any` escapes so
-     future regressions are caught early.
+8. Type coverage & static analysis - **Done** :heavy_check_mark:
+   * **mypy** is now part of the CI pipeline and runs before unit tests.
+     All `Any` types have been replaced with proper `ModuleType` annotations.
+     The entrypoint module achieves full type safety with mypy strict mode.
 
-9. Backwards compatibility guard-rails
-   * Add optional integration tests that boot *real* Odoo, Redis and Postgres
-     servers inside Docker to validate that the generated command works
-     end-to-end against PostgreSQL and Redis.  The current unit tests rely
-     on heavy monkey-patching which may let subtle incompatibilities slip through.
+9. Backwards compatibility guard-rails - **Done** :heavy_check_mark:
+   * Integration tests with *real* PostgreSQL, Redis and Odoo containers
+     are now part of the CI pipeline. Tests validate service connectivity,
+     command generation, version detection, and production behavior.
 
 10. Entrypoint PID hand-off (`exec` semantics) - **Done** :heavy_check_mark:
    * The Python entrypoint correctly uses `os.execv()` to replace itself with the Odoo process.
