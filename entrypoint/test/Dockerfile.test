@@ -1,0 +1,16 @@
+FROM odoo:18
+
+# Install development dependencies
+USER root
+RUN apt-get update && apt-get install -y python3-pip procps && rm -rf /var/lib/apt/lists/*
+
+# Copy our entrypoint implementation
+COPY entrypoint /opt/odoo/entrypoint
+COPY tools /opt/odoo/tools
+
+# Make entrypoint executable
+RUN chmod +x /opt/odoo/entrypoint/entrypoint.py
+
+# Override entrypoint
+ENTRYPOINT ["/opt/odoo/entrypoint/entrypoint.py"]
+CMD ["odoo"]
