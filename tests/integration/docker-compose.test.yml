@@ -1,0 +1,92 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: odoo
+      POSTGRES_PASSWORD: odoo
+      POSTGRES_DB: odoo
+    ports:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U odoo"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  odoo:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.c.odoo
+      args:
+        ODOO_MAJOR_VERSION: 17
+        ODOO_MINOR_VERSION: 0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # Database connection
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: odoo
+      POSTGRES_PASSWORD: odoo
+      POSTGRES_DB: odoo
+      # Redis connection
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # Odoo configuration
+      ODOO_WITHOUT_DEMO: "true"
+      ODOO_LOG_LEVEL: info
+      ODOO_LIST_DB: "false"
+      # Test-specific settings
+      ENTRYPOINT_DEV_MODE: "false"  # Ensure production behavior
+    volumes:
+      - ../../entrypoint:/opt/odoo/entrypoint:ro
+      - ../../tools:/opt/odoo/tools:ro
+    command: ["odoo", "--version"]  # Simple test command
+
+  # Test runner service
+  test-runner:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.c.odoo
+      args:
+        ODOO_MAJOR_VERSION: 17
+        ODOO_MINOR_VERSION: 0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # Database connection
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: odoo
+      POSTGRES_PASSWORD: odoo
+      POSTGRES_DB: odoo_test
+      # Redis connection
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # Test environment
+      PYTEST_CURRENT_TEST: ""  # Clear to test production behavior
+      ENTRYPOINT_DEV_MODE: ""  # Clear to test production behavior
+    volumes:
+      - ../../entrypoint:/opt/odoo/entrypoint:ro
+      - ../../tools:/opt/odoo/tools:ro
+      - ..:/tests:ro
+    working_dir: /tests
+    command: ["python3", "-m", "pytest", "integration/test_entrypoint_integration.py", "-v"]

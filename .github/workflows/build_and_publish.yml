@@ -278,6 +278,22 @@ jobs:
             python3 -m unittest discover tests
           fi
 
+      # Run integration tests with real services
+      - name: Run integration tests
+        shell: bash
+        continue-on-error: ${{ github.event_name != 'release' && github.ref != 'refs/heads/main' }}
+        run: |
+          echo "Running integration tests with real PostgreSQL and Redis..."
+          if [[ "${GITHUB_REF}" == "refs/heads/main" ]] || [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
+            echo "Strict mode for integration tests."
+            set -e
+            tests/integration/run_integration_tests.sh
+          else
+            echo "Non-strict mode for integration tests."
+            set +e
+            tests/integration/run_integration_tests.sh
+          fi
+
       - name: Set ODOO_ENTERPRISE_REPOSITORY
         run: |
           if [ -n "${{ secrets.ODOO_ENTERPRISE_REPOSITORY }}" ]; then
