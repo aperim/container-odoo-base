@@ -109,7 +109,7 @@ script *production-ready*:
    --dbfilter                       | Multi-db routing            | ✓   | ✗    | ✓  | reads $ODOO_DBFILTER
    --debug / --debug-mode           | Debug flags                 | ✓   | ✗    | ✓  | reads $ODOO_DEBUG
    --email-from                     | SMTP                        | ✓   | ✗    | ✓  | reads $ODOO_EMAIL_FROM
-   --import-partial                 | Import resilience           | ✗   | ✗    | ✗  |
+   --import-partial                 | Import resilience           | ✓   | ✗    | ✓  | reads $ODOO_IMPORT_PARTIAL
    --init                           | Module installation         | ✗   | ✗    | ✗  | handled indirectly by initialise_instance()
    --limit-memory-soft              | Resource limits             | ✓   | ✗    | ✗  | 2 GiB default
    --limit-memory-hard              | Resource limits             | ✓   | ✗    | ✗  | 2.5 GiB default
@@ -117,32 +117,32 @@ script *production-ready*:
    --limit-time-cpu                 | Resource limits             | ✓   | ✗    | ✗  | 60 s
    --limit-time-real                | Resource limits             | ✓   | ✗    | ✗  | 120 s
    --list-db                        | Security                    | ✓   | ✗    | ✓  | reads $ODOO_LIST_DB (true/false)
-   --log-db                         | Logging                     | ✗   | ✗    | ✗  | rarely used - low prio
+   --log-db                         | Logging                     | ✓   | ✗    | ✓  | reads $ODOO_LOG_DB
    --log-handler                    | Logging                     | ✓   | ✗    | ✗  | werkzeug:CRITICAL default
    --log-level                      | Logging                     | ✓   | ✗    | ✓  | reads $ODOO_LOG_LEVEL
    --logfile                        | Logging                     | ✓   | ✗    | ✗  | /var/log/odoo/odoo.log when dir exists
    --max-cron-threads               | Performance                 | ✓   | ✗    | ✓  | reads $ODOO_MAX_CRON_THREADS (default 2)
    --netrpc / interface / port      | Legacy RPC                  | ✗   | ✗    | ✗  | rarely used nowadays - backlog
-   --osv-memory-age-limit           | Legacy ORM                  | ✗   | ✗    | ✗  |
-   --osv-memory-count-limit         | Legacy ORM                  | ✗   | ✗    | ✗  |
-   --pidfile                        | Process supervision         | ✗   | ✗    | ✗  |
-   --pg-path                        | PostgreSQL binaries         | ✗   | ✗    | ✗  |
+   --osv-memory-age-limit           | Legacy ORM                  | ✓   | ✗    | ✓  | reads $ODOO_OSV_MEMORY_AGE_LIMIT
+   --osv-memory-count-limit         | Legacy ORM                  | ✓   | ✗    | ✓  | reads $ODOO_OSV_MEMORY_COUNT_LIMIT
+   --pidfile                        | Process supervision         | ✓   | ✗    | ✓  | reads $ODOO_PIDFILE
+   --pg-path                        | PostgreSQL binaries         | ✓   | ✗    | ✓  | reads $ODOO_PG_PATH
    --proxy-mode                     | Reverse proxy               | ✓   | ✗    | ✗  | enabled by default
    # The experimental *proxy-ssl-header* and *proxy-add-x-forwarded-* helper
    # flags were never part of Odoo's official CLI and have therefore been
    # removed to honour the exhaustive 7.1 reference list.
-   --reportgz                       | Reporting                   | ✗   | ✗    | ✗  |
+   --reportgz                       | Reporting                   | ✓   | ✗    | ✓  | reads $ODOO_REPORTGZ
    --smtp-server                    | SMTP                        | ✓   | ✗    | ✓  | reads $SMTP_SERVER (default localhost)
    --smtp-port                      | SMTP                        | ✓   | ✗    | ✓  | reads $SMTP_PORT (25)
    --smtp-user                      | SMTP                        | ✓   | ✗    | ✓  | reads $SMTP_USER
    --smtp-password                  | SMTP                        | ✓   | ✗    | ✓  | reads $SMTP_PASSWORD
    --smtp-ssl                       | SMTP                        | ✓   | ✗    | ✓  | reads $SMTP_SSL (true/false)
    --syslog                         | Logging                     | ✓   | ✗    | ✓  | reads $ODOO_SYSLOG (opt-in)
-   --test-enable / test-*           | Test framework              | ✗   | ✗    | ✗  | out of scope for prod but should be wired
-   --timezone                       | Internationalisation        | ✗   | ✗    | ✗  | expose $TZ / $ODOO_TZ
-   --translate-modules              | Internationalisation        | ✗   | ✗    | ✗  | expose $ODOO_TRANSLATE_MODULES
+   --test-enable / test-*           | Test framework              | ✓   | ✗    | ✓  | reads $ODOO_TEST_ENABLE
+   --timezone                       | Internationalisation        | ✓   | ✗    | ✓  | reads $ODOO_TIMEZONE
+   --translate-modules              | Internationalisation        | ✓   | ✗    | ✓  | reads $ODOO_TRANSLATE_MODULES
    --unaccent                       | PostgreSQL ext              | ✓   | ✗    | ✗  | injected by default
-   --without-demo                   | Demo data                   | ✗   | ✗    | ✗  | respect $ODOO_WITHOUT_DEMO
+   --without-demo                   | Demo data                   | ✓   | ✗    | ✓  | reads $ODOO_WITHOUT_DEMO
    --workers                        | Concurrency                 | ✓   | ✗    | ✗  | computed from CPU count unless overridden
    --xmlrpc / interface / port      | HTTP API                    | (core) | (core) | - | Odoo enables by default - override TBD
    --xmlrpcs / interface / port     | HTTPS API                   | ✗   | ✗    | ✗  | secure RPC endpoint; needs TLS cfg
@@ -204,7 +204,7 @@ entry-point as a strict drop-in replacement for the historical `entrypoint.sh`.
 """
 
 from __future__ import annotations
-from typing import TypedDict, Any
+from typing import TypedDict, Any, Generator
 from os import environ
 
 import ast
@@ -395,7 +395,7 @@ SCAFFOLDED_SEMAPHORE = Path("/etc/odoo/.scaffolded")
 
 
 @contextlib.contextmanager  # type: ignore[misc]
-def _file_lock(target: Path):  # noqa: D401 - imperative mood
+def _file_lock(target: Path) -> Generator[None, None, None]:  # noqa: D401 - imperative mood
     """Context-manager acquiring an *exclusive* lock for *target*.
 
     The lock is implemented via :pyfunc:`fcntl.flock` on a sibling file named
@@ -789,6 +789,36 @@ class EntrypointEnv(TypedDict):
     # exhaustive flag coverage (open-issue #2).
     ODOO_EXTRA_FLAGS: str
 
+    # --- Missing flags from TODO #2 completion -------------------------
+    # Import resilience
+    ODOO_IMPORT_PARTIAL: str
+    
+    # Logging to database
+    ODOO_LOG_DB: str
+    
+    # Legacy ORM settings
+    ODOO_OSV_MEMORY_AGE_LIMIT: str
+    ODOO_OSV_MEMORY_COUNT_LIMIT: str
+    
+    # Process supervision
+    ODOO_PIDFILE: str
+    
+    # PostgreSQL binaries path
+    ODOO_PG_PATH: str
+    
+    # Reporting
+    ODOO_REPORTGZ: str
+    
+    # Test framework
+    ODOO_TEST_ENABLE: str
+    
+    # Internationalisation
+    ODOO_TIMEZONE: str
+    ODOO_TRANSLATE_MODULES: str
+    
+    # Demo data
+    ODOO_WITHOUT_DEMO: str
+
     # --- Permission fixer ----------------------------------------------
     # When set to a *truthy* value the recursive `chown` performed by
     # `fix_permissions()` is **disabled**.  This gives operators deploying
@@ -820,7 +850,7 @@ def gather_env(
     src = environ if env is None else env
 
     def _get(key: str, default: str = "") -> str:  # noqa: WPS430 - tiny nested helper
-        return src.get(key, default)
+        return str(src.get(key, default))
 
     return EntrypointEnv(
         # Database / PgBouncer defaults follow the table from ENTRYPOINT.md
@@ -866,6 +896,20 @@ def gather_env(
 
         # Escape hatch for arbitrary flags (see TODO #2 completion)
         ODOO_EXTRA_FLAGS=_get("ODOO_EXTRA_FLAGS", ""),
+        
+        # Missing flags from TODO #2 completion
+        ODOO_IMPORT_PARTIAL=_get("ODOO_IMPORT_PARTIAL", ""),
+        ODOO_LOG_DB=_get("ODOO_LOG_DB", ""),
+        ODOO_OSV_MEMORY_AGE_LIMIT=_get("ODOO_OSV_MEMORY_AGE_LIMIT", ""),
+        ODOO_OSV_MEMORY_COUNT_LIMIT=_get("ODOO_OSV_MEMORY_COUNT_LIMIT", ""),
+        ODOO_PIDFILE=_get("ODOO_PIDFILE", ""),
+        ODOO_PG_PATH=_get("ODOO_PG_PATH", ""),
+        ODOO_REPORTGZ=_get("ODOO_REPORTGZ", ""),
+        ODOO_TEST_ENABLE=_get("ODOO_TEST_ENABLE", ""),
+        ODOO_TIMEZONE=_get("ODOO_TIMEZONE", ""),
+        ODOO_TRANSLATE_MODULES=_get("ODOO_TRANSLATE_MODULES", ""),
+        ODOO_WITHOUT_DEMO=_get("ODOO_WITHOUT_DEMO", ""),
+        
         # Permission fixer toggle
         ODOO_SKIP_CHOWN=_get("ODOO_SKIP_CHOWN", ""),
         # Runtime user
@@ -1939,7 +1983,9 @@ def build_odoo_command(
     import os
 
     _add("--workers", str(compute_workers(os.cpu_count())))
-    _add("--http-interface", compute_http_interface(os.getenv("ODOO_MAJOR_VERSION", "0")))
+    # Pass None when ODOO_MAJOR_VERSION is not set to trigger auto-detection
+    major_version = os.getenv("ODOO_MAJOR_VERSION")
+    _add("--http-interface", compute_http_interface(major_version))
     _add("--config", "/etc/odoo/odoo.conf")
 
     addons_paths = get_addons_paths(env)
@@ -2146,6 +2192,52 @@ def build_odoo_command(
     # Syslog opt-in
     if env.get("ODOO_SYSLOG") and env["ODOO_SYSLOG"].lower() in {"1", "true", "yes", "on"}:
         _add("--syslog")
+
+    # ------------------------------------------------------------------
+    # Missing flags from TODO #2 completion
+    # ------------------------------------------------------------------
+    
+    # Import resilience
+    if env.get("ODOO_IMPORT_PARTIAL"):
+        _add("--import-partial", env["ODOO_IMPORT_PARTIAL"])
+    
+    # Logging to database
+    if env.get("ODOO_LOG_DB"):
+        _add("--log-db", env["ODOO_LOG_DB"])
+    
+    # Legacy ORM settings
+    if env.get("ODOO_OSV_MEMORY_AGE_LIMIT"):
+        _add("--osv-memory-age-limit", env["ODOO_OSV_MEMORY_AGE_LIMIT"])
+    
+    if env.get("ODOO_OSV_MEMORY_COUNT_LIMIT"):
+        _add("--osv-memory-count-limit", env["ODOO_OSV_MEMORY_COUNT_LIMIT"])
+    
+    # Process supervision
+    if env.get("ODOO_PIDFILE"):
+        _add("--pidfile", env["ODOO_PIDFILE"])
+    
+    # PostgreSQL binaries path
+    if env.get("ODOO_PG_PATH"):
+        _add("--pg_path", env["ODOO_PG_PATH"])
+    
+    # Reporting
+    if env.get("ODOO_REPORTGZ") and env["ODOO_REPORTGZ"].lower() in {"1", "true", "yes", "on"}:
+        _add("--reportgz")
+    
+    # Test framework
+    if env.get("ODOO_TEST_ENABLE") and env["ODOO_TEST_ENABLE"].lower() in {"1", "true", "yes", "on"}:
+        _add("--test-enable")
+    
+    # Internationalisation
+    if env.get("ODOO_TIMEZONE"):
+        _add("--timezone", env["ODOO_TIMEZONE"])
+    
+    if env.get("ODOO_TRANSLATE_MODULES"):
+        _add("--translate-modules", env["ODOO_TRANSLATE_MODULES"])
+    
+    # Demo data
+    if env.get("ODOO_WITHOUT_DEMO"):
+        _add("--without-demo", env["ODOO_WITHOUT_DEMO"])
 
     # ------------------------------------------------------------------
     # Finally append any *ODOO_EXTRA_FLAGS* so they override built-in
