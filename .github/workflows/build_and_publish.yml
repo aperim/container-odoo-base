@@ -312,7 +312,7 @@ jobs:
 
       # Attest Community Odoo Container build provenance
       - name: Attest Odoo Container
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v3
         with:
           subject-name: ${{ env.ODOO_IMAGE_NAME }}
           subject-digest: ${{ steps.odoo_community_push.outputs.digest }}
@@ -350,7 +350,7 @@ jobs:
 
       # Attest Community Nginx Container build provenance
       - name: Attest Nginx Container
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v3
         with:
           subject-name: ${{ env.NGINX_IMAGE_NAME }}
           subject-digest: ${{ steps.odoo_community_nginx_push.outputs.digest }}
