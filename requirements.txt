@@ -2,7 +2,7 @@ certifi==2025.4.26
 charset-normalizer==3.4.1
 idna==3.10
 psycopg2-binary==2.9.10
-redis==6.2.0
+redis==7.0.1
 requests==2.32.4
 urllib3==2.4.0
 websockets==15.0.1
